@@ -6,6 +6,13 @@ linters:
     - revive
     - misspell
     - unconvert
+  settings:
+    errcheck:
+      # Writing to stdout/stderr and ignoring the (near-impossible) error is idiomatic.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
 
 formatters:
   enable:
