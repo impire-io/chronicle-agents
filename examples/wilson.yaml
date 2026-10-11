@@ -14,9 +14,18 @@ triggers:
   - kind: mention            # a message whose mentions name wilson
     store: rooms             # the default
     # under: room/close-w41  # one room; every room when absent
+  # - kind: op               # every operation under a path (here: a room being closed)
+  #   under: room/close-w41
+  #   operation: close
+  # - kind: subject          # a message on a NATS subject — a feed outside the store —
+  #   subject: alerts.>      # answered in the room the entry names
+  #   room: room/ops
+  # - kind: schedule         # a tick the server writes in the tick store:
+  #   schedule: schedule/hourly   # chronicle-agents schedule create hourly --every 1h --ttl 10m
+  #   room: room/ops
 
 harness:
-  preset: claude-code        # claude -p, headless; or a template: {command, args, env}
+  preset: claude-code        # claude -p, headless; also: pi, hermes; or a template: {command, args, env}
   # model: claude-sonnet-5-5
   deadline: 3m
 

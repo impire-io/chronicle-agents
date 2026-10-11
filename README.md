@@ -24,8 +24,7 @@ enough — with the `chronicle` CLI's context selected or named:
 ```sh
 go install github.com/impire-io/chronicle-agents/cmd/chronicle-agents@latest
 
-chronicle store create rooms                     # a store for the rooms (the chronicle CLI)
-chronicle-agents store init                      # the room and message types, declared in it
+chronicle-agents store init                      # the workspace: the rooms store with its types, and the tick store
 chronicle service-account create wilson --role writer
 
 chronicle instance create room/close-w41 --data '{"title":"Week 41 close","status":"open"}'
@@ -52,11 +51,14 @@ the mention as its parent — a few seconds later.
   created once, never changed. Reading a room is a listing of the store's
   state under the room's prefix; chronicle keeps it current.
 - **An agent is a declaration.** The definition file names an identity (a
-  chronicle service account), the **triggers** it reacts to (a mention, an
-  op under a path; a message on a subject and a schedule tick are coming),
-  the **harness** that thinks (`claude-code`, or any command reading the
-  context on stdin), its instructions, its **toolkits** (MCP servers), and a
-  **budget**. See [`examples/wilson.yaml`](examples/wilson.yaml).
+  chronicle service account), the **triggers** it reacts to — a mention, an
+  op under a path, a message on a NATS subject, a tick of a schedule
+  (`chronicle-agents schedule create hourly --every 1h`; the server writes
+  the ticks into the tick store, the runner keeps no clock) — the
+  **harness** that thinks (`claude-code`, `pi`, `hermes`, or any command
+  reading the context on stdin), its instructions, its **toolkits** (MCP
+  servers), and a **budget**. A trigger that is not in a room names the
+  room its turn goes to. See [`examples/wilson.yaml`](examples/wilson.yaml).
 - **The runner reacts; it never loops.** It tails the store, and an
   operation the declaration selects becomes at most one **turn**: admitted
   or refused by the budget (so many turns per room per window, so deep a
@@ -71,11 +73,10 @@ the mention as its parent — a few seconds later.
 
 ## Status
 
-Spec 001 — the walking skeleton: the types, the definition file, the runner
-with mention and op triggers, the `claude-code` and command harnesses,
-tested against chronicle's own embedded quick start. Subject triggers,
-schedule ticks (a store that allows schedules is asked of chronicle), a web
-interface and placement are later specs; the design is in
+Specs 001 and 002: the types, the definition file, the runner with all four
+trigger kinds, the `claude-code`, `pi`, `hermes` and command harnesses,
+tested against chronicle's own embedded quick start (chronicle v0.5.0). A
+web interface for rooms and placement are later specs; the design is in
 [`chronicle-agents-hq`](https://github.com/impire-io/chronicle-agents-hq)
 `02-DESIGN`.
 

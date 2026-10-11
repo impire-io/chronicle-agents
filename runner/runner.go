@@ -1,8 +1,9 @@
 // Package runner serves one declaration under one credential: it tails the
-// declaration's stores, matches every operation against the triggers,
-// admits or refuses, composes the turn from the room's projection, hands
-// it to the harness and writes the turn as the agent's own operation with
-// the triggers as parents (chronicle-agents-hq design 02).
+// declaration's stores and subscribes to its subjects, matches every
+// operation and message against the triggers, admits or refuses, composes
+// the turn from the room's projection, hands it to the harness and writes
+// the turn as the agent's own operation with the triggers as parents
+// (chronicle-agents-hq design 02, decisions 0003 and 0004).
 //
 // There is no clock here and no second record: everything the runner
 // holds is folded from the stores it tails and is rebuilt from them when
@@ -13,6 +14,8 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +28,7 @@ import (
 	"github.com/impire-io/chronicle-agents/types"
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -51,15 +55,30 @@ type room struct {
 	pending  []message // triggers queued while a turn is composed
 }
 
-// message is one message as the fold sees it: the op and its data.
+// message is one message as the fold sees it — or one trigger that is not
+// a message: a tick, a message on a subject, an op on the room.
 type message struct {
 	Seq     uint64
-	OpID    string
+	OpID    string // empty for a tick or a subject message
+	Digest  string // a subject message's identity; empty otherwise
 	Parents []string
 	Path    string
 	Author  string
 	Ts      time.Time
 	Data    types.MessageData
+}
+
+// identity is what the turn is derived from: the op id, else the digest,
+// else the sequence (decision 0004: a tick's identity is its sequence).
+func (m message) identity() string {
+	switch {
+	case m.OpID != "":
+		return m.OpID
+	case m.Digest != "":
+		return "digest:" + m.Digest
+	default:
+		return fmt.Sprintf("seq:%d", m.Seq)
+	}
 }
 
 // New builds a runner for a declaration over a connected client whose
@@ -95,12 +114,15 @@ func New(c *client.Client, decl declaration.Declaration, log *slog.Logger) (*Run
 }
 
 // event is what the serving loop consumes: an operation from a store's
-// tail, or a finished turn.
+// tail, a message on a subject, or a finished turn.
 type event struct {
 	store string
 	op    contract.Op
 	live  bool
 	err   error
+
+	subject *declaration.Trigger // a subject trigger's entry
+	msg     *nats.Msg
 
 	done *turnResult
 }
@@ -115,7 +137,7 @@ type turnResult struct {
 // Serve runs until the context ends. It tails every store the
 // declaration names from the start — history feeds the projection and
 // is never answered; what lands after the stream head seen at start is
-// live and may trigger.
+// live and may trigger — and subscribes to every subject it names.
 func (r *Runner) Serve(ctx context.Context) error {
 	stores := r.decl.Stores()
 	if len(stores) == 0 {
@@ -147,6 +169,20 @@ func (r *Runner) Serve(ctx context.Context) error {
 			}
 		}(store, head)
 	}
+	for i := range r.decl.Triggers {
+		t := &r.decl.Triggers[i]
+		if t.Kind != declaration.KindSubject {
+			continue
+		}
+		sub, err := r.c.Conn().Subscribe(t.Subject, func(m *nats.Msg) {
+			events <- event{subject: t, msg: m}
+		})
+		if err != nil {
+			return fmt.Errorf("subject %s: %w", t.Subject, err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+		r.log.Info("listening", "subject", t.Subject, "room", t.Room)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -160,6 +196,8 @@ func (r *Runner) Serve(ctx context.Context) error {
 				return fmt.Errorf("tail %s: %w", ev.store, ev.err)
 			case ev.done != nil:
 				r.finish(ctx, ev.done, events)
+			case ev.msg != nil:
+				r.observeSubject(ctx, ev.subject, ev.msg, events)
 			default:
 				r.observe(ctx, ev.store, ev.op, ev.live, events)
 			}
@@ -172,27 +210,30 @@ func (r *Runner) Serve(ctx context.Context) error {
 func (r *Runner) observe(ctx context.Context, store string, op contract.Op, live bool, events chan<- event) {
 	path := contract.TailPath(contract.InstanceFromSubject(store, op.Subject))
 	toks := strings.Split(path, "/")
-	if len(toks) < 2 || toks[0] != types.Room {
-		return // not a room, not a message: outside design 01's model
+	if len(toks) < 2 {
+		return
 	}
-	rm := r.room(store, toks[0]+"/"+toks[1])
-
+	inRooms := toks[0] == types.Room
+	var rm *room
 	var msg *message
-	switch {
-	case len(toks) == 2:
-		r.foldRoomOp(rm, op)
-	case len(toks) == 4 && toks[2] == types.Messages && op.Type == "create":
-		var data types.MessageData
-		if err := json.Unmarshal(op.Payload, &data); err != nil {
-			r.log.Warn("message payload unreadable", "path", path, "seq", op.Seq, "err", err)
+	if inRooms {
+		rm = r.room(store, toks[0]+"/"+toks[1])
+		switch {
+		case len(toks) == 2:
+			r.foldRoomOp(rm, op)
+		case len(toks) == 4 && toks[2] == types.Messages && op.Type == "create":
+			var data types.MessageData
+			if err := json.Unmarshal(op.Payload, &data); err != nil {
+				r.log.Warn("message payload unreadable", "path", path, "seq", op.Seq, "err", err)
+				return
+			}
+			m := message{Seq: op.Seq, OpID: op.ID, Parents: op.Parents, Path: path, Author: op.Author, Ts: op.Ts, Data: data}
+			rm.msgs = append(rm.msgs, m)
+			msg = &rm.msgs[len(rm.msgs)-1]
+			rm.byOpID[op.ID] = msg
+		default:
 			return
 		}
-		m := message{Seq: op.Seq, OpID: op.ID, Parents: op.Parents, Path: path, Author: op.Author, Ts: op.Ts, Data: data}
-		rm.msgs = append(rm.msgs, m)
-		msg = &rm.msgs[len(rm.msgs)-1]
-		rm.byOpID[op.ID] = msg
-	default:
-		return
 	}
 	if !live {
 		return // history: remembered, never answered
@@ -200,30 +241,64 @@ func (r *Runner) observe(ctx context.Context, store string, op contract.Op, live
 	if op.Author == r.decl.Identity {
 		return // self-exclusion is mechanical
 	}
-	if !r.matches(store, path, op, msg) {
+	entry := r.match(store, path, op, msg)
+	if entry == nil {
 		return
 	}
+	// The trigger as the turn sees it: the message itself, or the op.
+	trigger := message{Seq: op.Seq, OpID: op.ID, Parents: op.Parents, Path: path, Author: op.Author, Ts: op.Ts,
+		Data: types.MessageData{Text: fmt.Sprintf("(%s on %s)", op.Type, path), Kind: types.KindSystem}}
+	if msg != nil {
+		trigger = *msg
+	}
+	if entry.Kind == declaration.KindSchedule {
+		trigger.Data.Text = fmt.Sprintf("(tick on %s)", path)
+	}
+	// Where the turn goes: the trigger's room, or the room the entry names.
+	if entry.Room != "" {
+		rm = r.room(entry.RoomStore, entry.Room)
+	}
+	if rm == nil {
+		return
+	}
+	r.react(ctx, rm, trigger, events)
+}
+
+// observeSubject turns a message on a subject into a trigger in the room
+// the entry names; its identity is a digest of subject and payload.
+func (r *Runner) observeSubject(ctx context.Context, entry *declaration.Trigger, m *nats.Msg, events chan<- event) {
+	sum := sha256.Sum256(append([]byte(m.Subject+"\n"), m.Data...))
+	payload := string(m.Data)
+	if len(payload) > 2000 {
+		payload = payload[:2000] + "…"
+	}
+	trigger := message{
+		Digest: hex.EncodeToString(sum[:]),
+		Path:   m.Subject,
+		Ts:     time.Now(),
+		Data:   types.MessageData{Text: fmt.Sprintf("(a message on %s) %s", m.Subject, payload), Kind: types.KindSystem},
+	}
+	r.log.Info("subject message", "subject", m.Subject, "room", entry.Room, "bytes", len(m.Data))
+	r.react(ctx, r.room(entry.RoomStore, entry.Room), trigger, events)
+}
+
+// react runs a matched trigger through the room: drop in a closed room,
+// admission, coalescing, the turn.
+func (r *Runner) react(ctx context.Context, rm *room, trigger message, events chan<- event) {
 	if rm.closed {
-		r.log.Info("dropped: closed room", "room", rm.path, "seq", op.Seq)
+		r.log.Info("dropped: closed room", "room", rm.path, "trigger", trigger.identity())
 		return
 	}
-	if msg == nil {
-		// An op trigger on the room itself (a rename, a close). The turn
-		// answers in the room; the trigger is the op.
-		m := message{Seq: op.Seq, OpID: op.ID, Parents: op.Parents, Path: path, Author: op.Author, Ts: op.Ts,
-			Data: types.MessageData{Text: fmt.Sprintf("(%s on the room)", op.Type), Kind: types.KindSystem}}
-		msg = &m
-	}
-	if rule := r.admit(ctx, rm, *msg); rule != "" {
-		r.log.Warn("refused", "room", rm.path, "seq", op.Seq, "trigger", op.ID, "author", op.Author, "rule", rule)
+	if rule := r.admit(ctx, rm, trigger); rule != "" {
+		r.log.Warn("refused", "room", rm.path, "trigger", trigger.identity(), "author", trigger.Author, "rule", rule)
 		return
 	}
 	if rm.thinking {
-		rm.pending = append(rm.pending, *msg)
-		r.log.Info("queued: a turn is being composed", "room", rm.path, "seq", op.Seq)
+		rm.pending = append(rm.pending, trigger)
+		r.log.Info("queued: a turn is being composed", "room", rm.path, "trigger", trigger.identity())
 		return
 	}
-	r.start(ctx, rm, []message{*msg}, events)
+	r.start(ctx, rm, []message{trigger}, events)
 }
 
 func (r *Runner) room(store, path string) *room {
@@ -248,39 +323,49 @@ func (r *Runner) foldRoomOp(rm *room, op contract.Op) {
 	}
 }
 
-// matches reports whether any trigger entry selects this operation.
-func (r *Runner) matches(store, path string, op contract.Op, msg *message) bool {
-	for _, t := range r.decl.Triggers {
-		if t.Store != store {
-			continue
-		}
-		if t.Under != "" && path != t.Under && !strings.HasPrefix(path, t.Under+"/") {
-			continue
-		}
+// match returns the first trigger entry that selects this operation.
+func (r *Runner) match(store, path string, op contract.Op, msg *message) *declaration.Trigger {
+	for i := range r.decl.Triggers {
+		t := &r.decl.Triggers[i]
 		switch t.Kind {
 		case declaration.KindMention:
-			if msg == nil {
+			if t.Store != store || msg == nil {
+				continue
+			}
+			if t.Under != "" && path != t.Under && !strings.HasPrefix(path, t.Under+"/") {
 				continue
 			}
 			for _, name := range msg.Data.Mentions {
 				if name == r.decl.Identity {
-					return true
+					return t
 				}
 			}
 		case declaration.KindOp:
+			if t.Store != store {
+				continue
+			}
+			if t.Under != "" && path != t.Under && !strings.HasPrefix(path, t.Under+"/") {
+				continue
+			}
 			if t.Operation == "" || t.Operation == op.Type {
-				return true
+				return t
+			}
+		case declaration.KindSchedule:
+			// The server's ticks land under schedule/<name>/ticks/…; the
+			// registration itself (an op on schedule/<name>) is not a tick.
+			if t.Store == store && strings.HasPrefix(path, t.Schedule+"/ticks/") {
+				return t
 			}
 		}
 	}
-	return false
+	return nil
 }
 
 // admit applies the budget from the record alone and names the rule
 // that refuses, or "" to admit.
 func (r *Runner) admit(ctx context.Context, rm *room, trigger message) string {
 	// Agent to agent: the author is a service account in the registry.
-	if !r.decl.Budget.ReplyToAgents && r.kindOf(ctx, trigger.Author) == "service" {
+	if trigger.Author != "" && !r.decl.Budget.ReplyToAgents && r.kindOf(ctx, trigger.Author) == "service" {
 		return "agent-to-agent: the author is a service account and reply_to_agents is off"
 	}
 	// The window floor: the agent's own turns in this room within the window.
@@ -339,7 +424,7 @@ func (r *Runner) start(ctx context.Context, rm *room, triggers []message, events
 	for _, tk := range r.decl.Toolkits {
 		input.Toolkits = append(input.Toolkits, harness.Toolkit{Name: tk.Name, Command: tk.Command, Args: tk.Args, Env: tk.Env})
 	}
-	r.log.Info("turn", "room", rm.path, "triggers", len(triggers), "seq", triggers[len(triggers)-1].Seq)
+	r.log.Info("turn", "room", rm.path, "triggers", len(triggers), "trigger", triggers[len(triggers)-1].identity())
 	go func() {
 		started := time.Now()
 		text, err := harness.Invoke(ctx, r.tpl, input)
@@ -351,7 +436,7 @@ func (r *Runner) start(ctx context.Context, rm *room, triggers []message, events
 }
 
 // compose renders the room's projection as the harness's context: the
-// transcript, oldest first, and which lines are the triggers.
+// transcript, oldest first, and what triggered the turn.
 func (r *Runner) compose(rm *room, triggers []message) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s, an agent in the room %s. The room's transcript, oldest first:\n\n", r.decl.Identity, rm.path)
@@ -362,18 +447,15 @@ func (r *Runner) compose(rm *room, triggers []message) string {
 		}
 		fmt.Fprintf(&b, "[%d] %s (%s): %s\n", m.Seq, m.Author, kind, m.Data.Text)
 	}
-	b.WriteString("\nAnswer the message")
-	if len(triggers) > 1 {
-		b.WriteString("s")
-	}
-	b.WriteString(" at sequence")
-	for i, t := range triggers {
-		if i > 0 {
-			b.WriteString(",")
+	b.WriteString("\n")
+	for _, t := range triggers {
+		if t.OpID != "" && rm.byOpID[t.OpID] != nil {
+			fmt.Fprintf(&b, "Answer the message at sequence %d.\n", t.Seq)
+		} else {
+			fmt.Fprintf(&b, "You were triggered by: %s\n", t.Data.Text)
 		}
-		fmt.Fprintf(&b, " %d", t.Seq)
 	}
-	b.WriteString(". Reply with the message text only.\n")
+	b.WriteString("Reply with the message text only.\n")
 	return b.String()
 }
 
@@ -395,27 +477,34 @@ func (r *Runner) finish(ctx context.Context, res *turnResult, events chan<- even
 }
 
 // post writes the turn: its path derived from the triggers, the
-// create-if-absent guard the client's default, the triggers as parents.
+// create-if-absent guard the client's default, the triggers' op ids as
+// parents where they have one.
 func (r *Runner) post(ctx context.Context, rm *room, triggers []message, text string) {
 	ids := make([]string, len(triggers))
-	mentions := make([]string, 0, len(triggers))
+	var parents, mentions []string
 	seen := map[string]bool{}
+	replyTo := ""
 	for i, t := range triggers {
-		ids[i] = t.OpID
-		if !seen[t.Author] {
+		ids[i] = t.identity()
+		if t.OpID != "" {
+			parents = append(parents, t.OpID)
+		}
+		if t.Author != "" && !seen[t.Author] {
 			seen[t.Author] = true
 			mentions = append(mentions, t.Author)
+		}
+		if t.OpID != "" {
+			replyTo = t.Path // the last op in the record — a message, the room itself — is what the turn answers; a tick or a subject message has no path in the record
 		}
 	}
 	id := TurnID(r.decl.Identity, ids)
 	path := rm.path + "/messages/m-" + id
-	payload, _ := json.Marshal(types.MessageData{
-		Text:     text,
-		Kind:     types.KindTurn,
-		Mentions: mentions,
-		ReplyTo:  triggers[len(triggers)-1].Path,
-	})
-	ack, err := r.c.Create(ctx, rm.store, path, "create", payload, client.WithOpID(id), client.WithParents(ids...))
+	payload, _ := json.Marshal(types.MessageData{Text: text, Kind: types.KindTurn, Mentions: mentions, ReplyTo: replyTo})
+	opts := []client.ApplyOpt{client.WithOpID(id)}
+	if len(parents) > 0 {
+		opts = append(opts, client.WithParents(parents...))
+	}
+	ack, err := r.c.Create(ctx, rm.store, path, "create", payload, opts...)
 	switch {
 	case errors.Is(err, client.ErrInstanceExists):
 		r.log.Info("already answered: the turn exists", "room", rm.path, "turn", path)

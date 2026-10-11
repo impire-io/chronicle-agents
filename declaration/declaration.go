@@ -2,7 +2,7 @@
 // six facets chronicle-agents-hq design 02 states — an identity, its
 // triggers, a harness, its instructions, its toolkits, a budget. Loading a
 // file validates it and refuses, with the field named, what the runner
-// cannot serve.
+// cannot serve (decisions 0003 and 0004).
 package declaration
 
 import (
@@ -47,8 +47,9 @@ type Declaration struct {
 type Trigger struct {
 	// Kind is mention, op, subject or schedule.
 	Kind string `json:"kind"`
-	// Store is the chronicle store the trigger reads (mention, op); the
-	// runner's default store when empty.
+	// Store is the chronicle store the trigger reads: the rooms store for
+	// mention and op (default rooms), the tick store for schedule (default
+	// ticks). Unused by subject.
 	Store string `json:"store,omitempty"`
 	// Under narrows a mention or op trigger to the instances under a path
 	// (a room, a type); every room in the store when empty.
@@ -57,8 +58,15 @@ type Trigger struct {
 	Operation string `json:"operation,omitempty"`
 	// Subject is the NATS subject of a subject trigger.
 	Subject string `json:"subject,omitempty"`
-	// Schedule is the schedule's path in a tick store.
+	// Schedule is the schedule's path in the tick store: schedule/<name>.
 	Schedule string `json:"schedule,omitempty"`
+	// Room is where the turn is written when the trigger is not in a room
+	// — a subject, a schedule, an op under a path outside the rooms
+	// (decision 0004 point 2). A mention's turn answers in its own room.
+	Room string `json:"room,omitempty"`
+	// RoomStore is the store Room lives in; the default rooms store when
+	// empty.
+	RoomStore string `json:"room_store,omitempty"`
 }
 
 // Harness names what thinks: a preset, or a template of the harness
@@ -126,11 +134,12 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 // The defaults a file may leave unsaid.
 const (
-	DefaultStore    = "rooms"
-	DefaultTurns    = 3
-	DefaultWindow   = Duration(time.Minute)
-	DefaultDepth    = 4
-	DefaultDeadline = Duration(3 * time.Minute)
+	DefaultStore     = "rooms"
+	DefaultTickStore = "ticks"
+	DefaultTurns     = 3
+	DefaultWindow    = Duration(time.Minute)
+	DefaultDepth     = 4
+	DefaultDeadline  = Duration(3 * time.Minute)
 )
 
 // Load reads and validates a definition file.
@@ -154,9 +163,6 @@ func Parse(raw []byte) (Declaration, error) {
 	return d, nil
 }
 
-// ErrRefusedAtLoad marks a trigger kind the runner cannot serve yet.
-var ErrRefusedAtLoad = errors.New("refused at load")
-
 func (d *Declaration) validate() error {
 	if d.Identity == "" {
 		return errors.New("identity: required — the service account the agent acts as")
@@ -165,31 +171,8 @@ func (d *Declaration) validate() error {
 		return fmt.Errorf("identity: %w", err)
 	}
 	for i := range d.Triggers {
-		t := &d.Triggers[i]
-		switch t.Kind {
-		case KindMention, KindOp:
-			if t.Store == "" {
-				t.Store = DefaultStore
-			}
-			if err := contract.ValidateStoreName(t.Store); err != nil {
-				return fmt.Errorf("triggers[%d].store: %w", i, err)
-			}
-			if t.Under != "" {
-				if err := contract.ValidatePath(t.Under); err != nil {
-					return fmt.Errorf("triggers[%d].under: %w", i, err)
-				}
-			}
-			if t.Kind == KindMention && t.Operation != "" {
-				return fmt.Errorf("triggers[%d].operation: a mention trigger selects messages, not an operation", i)
-			}
-		case KindSubject:
-			return fmt.Errorf("triggers[%d]: subject triggers %w — they land in a following spec", i, ErrRefusedAtLoad)
-		case KindSchedule:
-			return fmt.Errorf("triggers[%d]: schedule triggers %w — a tick store needs a store that allows schedules, which chronicle does not offer yet (chronicle-61)", i, ErrRefusedAtLoad)
-		case "":
-			return fmt.Errorf("triggers[%d].kind: required — mention, op, subject or schedule", i)
-		default:
-			return fmt.Errorf("triggers[%d].kind: %q is not mention, op, subject or schedule", i, t.Kind)
+		if err := d.Triggers[i].validate(i); err != nil {
+			return err
 		}
 	}
 	if d.Harness.Preset == "" && d.Harness.Template == nil {
@@ -230,14 +213,102 @@ func (d *Declaration) validate() error {
 	return nil
 }
 
-// Stores lists the stores the declaration's triggers read, each once.
+func (t *Trigger) validate(i int) error {
+	switch t.Kind {
+	case KindMention, KindOp:
+		if t.Store == "" {
+			t.Store = DefaultStore
+		}
+		if err := contract.ValidateStoreName(t.Store); err != nil {
+			return fmt.Errorf("triggers[%d].store: %w", i, err)
+		}
+		if t.Under != "" {
+			if err := contract.ValidatePath(t.Under); err != nil {
+				return fmt.Errorf("triggers[%d].under: %w", i, err)
+			}
+		}
+		if t.Kind == KindMention && t.Operation != "" {
+			return fmt.Errorf("triggers[%d].operation: a mention trigger selects messages, not an operation", i)
+		}
+		if t.Kind == KindOp && !t.InRooms() && t.Room == "" {
+			return fmt.Errorf("triggers[%d].room: an op trigger outside the rooms names the room its turn is written in", i)
+		}
+	case KindSubject:
+		if t.Subject == "" {
+			return fmt.Errorf("triggers[%d].subject: required — the NATS subject to listen on", i)
+		}
+		if strings.ContainsAny(t.Subject, " \t\n") {
+			return fmt.Errorf("triggers[%d].subject: %q is not a subject", i, t.Subject)
+		}
+		if t.Room == "" {
+			return fmt.Errorf("triggers[%d].room: a subject trigger names the room its turn is written in", i)
+		}
+	case KindSchedule:
+		if t.Store == "" {
+			t.Store = DefaultTickStore
+		}
+		if err := contract.ValidateStoreName(t.Store); err != nil {
+			return fmt.Errorf("triggers[%d].store: %w", i, err)
+		}
+		if t.Schedule == "" {
+			return fmt.Errorf("triggers[%d].schedule: required — the schedule's path, schedule/<name>", i)
+		}
+		if err := contract.ValidatePath(t.Schedule); err != nil {
+			return fmt.Errorf("triggers[%d].schedule: %w", i, err)
+		}
+		if contract.PathType(t.Schedule) != "schedule" || strings.Count(t.Schedule, "/") != 1 {
+			return fmt.Errorf("triggers[%d].schedule: %q is not schedule/<name>", i, t.Schedule)
+		}
+		if t.Room == "" {
+			return fmt.Errorf("triggers[%d].room: a schedule trigger names the room its turn is written in", i)
+		}
+	case "":
+		return fmt.Errorf("triggers[%d].kind: required — mention, op, subject or schedule", i)
+	default:
+		return fmt.Errorf("triggers[%d].kind: %q is not mention, op, subject or schedule", i, t.Kind)
+	}
+	if t.Room != "" {
+		if err := contract.ValidatePath(t.Room); err != nil {
+			return fmt.Errorf("triggers[%d].room: %w", i, err)
+		}
+		if contract.PathType(t.Room) != "room" || strings.Count(t.Room, "/") != 1 {
+			return fmt.Errorf("triggers[%d].room: %q is not room/<id>", i, t.Room)
+		}
+		if t.RoomStore == "" {
+			t.RoomStore = DefaultStore
+		}
+		if err := contract.ValidateStoreName(t.RoomStore); err != nil {
+			return fmt.Errorf("triggers[%d].room_store: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// InRooms reports whether a mention or op trigger selects within the
+// rooms — every room, or the instances under one — so its turn answers
+// in the room the trigger is in.
+func (t Trigger) InRooms() bool {
+	return t.Under == "" || contract.PathType(t.Under) == "room"
+}
+
+// Stores lists the chronicle stores the declaration tails, each once: the
+// stores its mention, op and schedule triggers read, and the stores the
+// rooms its turns go to live in.
 func (d Declaration) Stores() []string {
 	seen := map[string]bool{}
 	var out []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
 	for _, t := range d.Triggers {
-		if t.Store != "" && !seen[t.Store] {
-			seen[t.Store] = true
-			out = append(out, t.Store)
+		if t.Kind != KindSubject {
+			add(t.Store)
+		}
+		if t.Room != "" {
+			add(t.RoomStore)
 		}
 	}
 	return out

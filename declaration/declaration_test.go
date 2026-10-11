@@ -1,7 +1,6 @@
 package declaration
 
 import (
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +34,7 @@ func TestParseFillsTheDefaults(t *testing.T) {
 	}
 }
 
-func TestParseReadsEveryFacet(t *testing.T) {
+func TestParseReadsEveryFacetAndEveryKind(t *testing.T) {
 	d, err := Parse([]byte(`
 identity: wilson
 triggers:
@@ -45,6 +44,16 @@ triggers:
   - kind: op
     under: room/close-w41
     operation: close
+  - kind: subject
+    subject: alerts.>
+    room: room/ops
+  - kind: schedule
+    schedule: schedule/hourly
+    room: room/ops
+  - kind: op
+    under: invoice/inv-1
+    room: room/close-w41
+    room_store: finance
 harness:
   template:
     command: tail
@@ -65,8 +74,18 @@ budget:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Triggers[0].Store != "finance" || d.Triggers[1].Store != DefaultStore || d.Triggers[1].Operation != "close" {
-		t.Errorf("triggers = %+v", d.Triggers)
+	tr := d.Triggers
+	if tr[0].Store != "finance" || tr[1].Store != DefaultStore || tr[1].Operation != "close" {
+		t.Errorf("triggers = %+v", tr[:2])
+	}
+	if tr[2].Room != "room/ops" || tr[2].RoomStore != DefaultStore {
+		t.Errorf("subject trigger = %+v", tr[2])
+	}
+	if tr[3].Store != DefaultTickStore || tr[3].RoomStore != DefaultStore {
+		t.Errorf("schedule trigger = %+v", tr[3])
+	}
+	if tr[4].InRooms() || tr[4].RoomStore != "finance" {
+		t.Errorf("op trigger outside the rooms = %+v", tr[4])
 	}
 	if d.Harness.Template == nil || d.Harness.Template.Command != "tail" || d.Harness.Deadline.Std() != 90*time.Second {
 		t.Errorf("harness = %+v", d.Harness)
@@ -77,27 +96,32 @@ budget:
 	if d.Budget.Turns != 2 || d.Budget.Window.Std() != 30*time.Second || !d.Budget.ReplyToAgents {
 		t.Errorf("budget = %+v", d.Budget)
 	}
-	if got := d.Stores(); len(got) != 2 {
-		t.Errorf("stores = %v, want finance and rooms", got)
+	// finance, rooms, ticks — each once, in first-seen order.
+	if got := d.Stores(); len(got) != 3 || got[0] != "finance" || got[1] != "rooms" || got[2] != "ticks" {
+		t.Errorf("stores = %v, want finance, rooms, ticks", got)
 	}
 }
 
 func TestRefusals(t *testing.T) {
+	h := "harness: {preset: claude-code}\n"
 	cases := map[string]struct {
 		file string
 		want string
-		load bool
 	}{
-		"no identity":   {file: "triggers: []\nharness: {preset: claude-code}\n", want: "identity: required"},
-		"bad identity":  {file: "identity: 'wil son'\nharness: {preset: claude-code}\n", want: "identity:"},
-		"no harness":    {file: "identity: wilson\n", want: "harness: a preset or a template"},
-		"both harness":  {file: "identity: wilson\nharness: {preset: claude-code, template: {command: x}}\n", want: "not both"},
-		"unknown kind":  {file: "identity: wilson\ntriggers: [{kind: poke}]\nharness: {preset: claude-code}\n", want: "not mention, op, subject or schedule"},
-		"mention + op":  {file: "identity: wilson\ntriggers: [{kind: mention, operation: close}]\nharness: {preset: claude-code}\n", want: "selects messages"},
-		"subject":       {file: "identity: wilson\ntriggers: [{kind: subject, subject: alerts.>}]\nharness: {preset: claude-code}\n", want: "following spec", load: true},
-		"schedule":      {file: "identity: wilson\ntriggers: [{kind: schedule, schedule: schedule/hourly}]\nharness: {preset: claude-code}\n", want: "chronicle-61", load: true},
-		"unknown field": {file: "identity: wilson\nharness: {preset: claude-code}\nwake: true\n", want: "wake"},
-		"toolkit name":  {file: "identity: wilson\nharness: {preset: claude-code}\ntoolkits: [{command: x}]\n", want: "toolkits[0].name"},
+		"no identity":          {file: "triggers: []\n" + h, want: "identity: required"},
+		"bad identity":         {file: "identity: 'wil son'\n" + h, want: "identity:"},
+		"no harness":           {file: "identity: wilson\n", want: "harness: a preset or a template"},
+		"both harness":         {file: "identity: wilson\nharness: {preset: claude-code, template: {command: x}}\n", want: "not both"},
+		"unknown kind":         {file: "identity: wilson\ntriggers: [{kind: poke}]\n" + h, want: "not mention, op, subject or schedule"},
+		"mention + op":         {file: "identity: wilson\ntriggers: [{kind: mention, operation: close}]\n" + h, want: "selects messages"},
+		"subject, no room":     {file: "identity: wilson\ntriggers: [{kind: subject, subject: alerts.>}]\n" + h, want: "names the room"},
+		"subject, no subject":  {file: "identity: wilson\ntriggers: [{kind: subject, room: room/ops}]\n" + h, want: "subject: required"},
+		"schedule, no room":    {file: "identity: wilson\ntriggers: [{kind: schedule, schedule: schedule/hourly}]\n" + h, want: "names the room"},
+		"schedule, bad path":   {file: "identity: wilson\ntriggers: [{kind: schedule, schedule: tick/hourly, room: room/ops}]\n" + h, want: "not schedule/<name>"},
+		"op outside, no room":  {file: "identity: wilson\ntriggers: [{kind: op, under: invoice/inv-1}]\n" + h, want: "outside the rooms names the room"},
+		"room is not a room":   {file: "identity: wilson\ntriggers: [{kind: subject, subject: a, room: invoice/inv-1}]\n" + h, want: "not room/<id>"},
+		"unknown field":        {file: "identity: wilson\n" + h + "wake: true\n", want: "wake"},
+		"toolkit without name": {file: "identity: wilson\n" + h + "toolkits: [{command: x}]\n", want: "toolkits[0].name"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -107,9 +131,6 @@ func TestRefusals(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q does not name %q", err, tc.want)
-			}
-			if tc.load && !errors.Is(err, ErrRefusedAtLoad) {
-				t.Errorf("error %q is not ErrRefusedAtLoad", err)
 			}
 		})
 	}

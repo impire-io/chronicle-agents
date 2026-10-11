@@ -3,7 +3,7 @@ module github.com/impire-io/chronicle-agents
 go 1.26.5
 
 require (
-	github.com/impire-io/chronicle v0.4.0
+	github.com/impire-io/chronicle v0.5.0
 	github.com/nats-io/nats.go v1.54.0
 	sigs.k8s.io/yaml v1.6.0
 )
