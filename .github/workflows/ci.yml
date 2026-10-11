@@ -18,6 +18,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/_app/package-lock.json
+
+      # The rooms interface: rebuilt, and the committed build must match it.
+      - name: Web
+        run: make web-fresh
+
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)

@@ -11,15 +11,19 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/impire-io/chronicle-agents/declaration"
 	"github.com/impire-io/chronicle-agents/runner"
 	"github.com/impire-io/chronicle-agents/schedule"
 	"github.com/impire-io/chronicle-agents/types"
+	"github.com/impire-io/chronicle-agents/web"
 	"github.com/impire-io/chronicle/cli"
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
+	"github.com/impire-io/chronicle/devdir"
 )
 
 const usage = `chronicle-agents — humans and agents collaborating in rooms kept on chronicle
@@ -28,6 +32,8 @@ const usage = `chronicle-agents — humans and agents collaborating in rooms kep
   chronicle-agents schedule create NAME (--every D | --cron EXPR) [--ttl D] [--store ticks]
                                                                   register a schedule: the server writes a tick under schedule/NAME/ticks at every firing
   chronicle-agents run FILE                                       serve one agent from its definition file: one process, one declaration, one credential
+  chronicle-agents web [--listen 127.0.0.1:8080] [--ws URL] [--public-url URL] [--hosted --account NAME]
+                                                                  serve the rooms interface: the embedded application, and how the browser reaches chronicle
 
 Connection flags, on every sentence (default: the chronicle context "local"):
   --context NAME     a saved chronicle context (chronicle context list)
@@ -58,6 +64,8 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 		return scheduleCreate(ctx, args[2:], out)
 	case "run":
 		return run(ctx, args[1:], out)
+	case "web":
+		return webCmd(ctx, args[1:], out)
 	case "version":
 		fmt.Fprintln(out, Version)
 		return nil
@@ -173,6 +181,12 @@ func storeInit(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "types %s and %s declared in store %s (as %s)\n", types.Room, types.Message, *store, c.Author())
+	// The workspace announces itself (chronicle-hq decision 0051): the
+	// console lists it and links to its interface once web has run.
+	if err := types.Announce(ctx, c, *store, Version); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s announced as %s in store %s\n", types.SolutionName, types.SolutionPath, *store)
 	if *ticks != "" {
 		if created, err := ensureStore(ctx, c, *ticks, "the tick store: schedules and their ticks (chronicle-agents)", client.WithSchedules()); err != nil {
 			return err
@@ -262,6 +276,115 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "%s serving from %s (harness %s)\n", decl.Identity, file, harnessName(decl))
 	return r.Serve(ctx)
+}
+
+// webCmd serves the rooms interface (chronicle-agents-hq design 03): the
+// embedded application and /config.json — how the browser reaches
+// chronicle. Loopback by default: the local form hands the page the
+// context's credential in the clear, as the quick start itself does.
+func webCmd(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("web", flag.ContinueOnError)
+	fs.SetOutput(out)
+	var f connFlags
+	f.bind(fs)
+	listen := fs.String("listen", "127.0.0.1:8080", "the address to serve on")
+	ws := fs.String("ws", "", "the websocket URL the browser connects to (default: the quick start's recorded one, beside the context's nkey)")
+	publicURL := fs.String("public-url", "", "the address the interface is reachable at, recorded on the announcement (default: http://<listen>)")
+	hosted := fs.Bool("hosted", false, "the hosted form: the browser signs in through the identity bridge with a GitHub token")
+	profile := fs.String("profile", bridgeProfileURL, "the install profile (hosted)")
+	account := fs.String("account", "", "the account to land in (hosted)")
+	store := fs.String("store", declaration.DefaultStore, "the rooms store")
+	ticks := fs.String("ticks", declaration.DefaultTickStore, "the tick store")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := web.Config{Store: *store, TickStore: *ticks}
+	if *hosted {
+		if *account == "" {
+			return errors.New("--hosted needs --account")
+		}
+		cfg.Mode, cfg.Profile, cfg.Account = "hosted", *profile, *account
+	} else {
+		url, nkey, creds, principal, err := f.connection()
+		if err != nil {
+			return err
+		}
+		cfg.Mode, cfg.Author = "local", principal
+		switch {
+		case creds != "":
+			b, err := os.ReadFile(creds)
+			if err != nil {
+				return fmt.Errorf("read credential: %w", err)
+			}
+			cfg.Creds = string(b)
+		case nkey != "":
+			b, err := os.ReadFile(nkey)
+			if err != nil {
+				return fmt.Errorf("read nkey: %w", err)
+			}
+			cfg.NkeySeed = string(b)
+			// The quick start's one user has no name of its own: the page asks.
+			if cfg.Author == devdir.LocalPrincipal {
+				cfg.Author = ""
+			}
+		default:
+			return errors.New("no credential to hand the browser: the context needs --nkey or --creds")
+		}
+		cfg.Servers = *ws
+		if cfg.Servers == "" && nkey != "" {
+			if b, err := os.ReadFile(filepath.Join(filepath.Dir(nkey), devdir.WebsocketURLFile)); err == nil {
+				cfg.Servers = strings.TrimSpace(string(b))
+			}
+		}
+		if cfg.Servers == "" {
+			return fmt.Errorf("no websocket URL: pass --ws, or run chronicle up --websocket-port 9222 (the NATS url is %s; a browser speaks NATS over a websocket only)", url)
+		}
+	}
+	// The announcement learns where the interface is.
+	addr := *publicURL
+	if addr == "" {
+		addr = "http://" + *listen
+	}
+	if c, err := f.resolve(""); err == nil {
+		if err := types.Locate(ctx, c, *store, addr); err != nil {
+			fmt.Fprintf(out, "note: the announcement was not updated: %v\n", err)
+		}
+		c.Close()
+	} else {
+		fmt.Fprintf(out, "note: the announcement was not updated: %v\n", err)
+	}
+	if !web.Built() {
+		fmt.Fprintln(out, "note: this binary carries no built interface (run make web); the page will say so")
+	}
+	fmt.Fprintf(out, "rooms interface at http://%s (%s; store %s)\n", *listen, cfg.Mode, cfg.Store)
+	return web.Serve(ctx, *listen, cfg)
+}
+
+// bridgeProfileURL is the hosted install's profile (chronicle-js carries the same default).
+const bridgeProfileURL = "https://chronicle.impire.dev/.well-known/chronicle/profile.json"
+
+// connection resolves the flags or the context to the raw facts a browser
+// needs handed over: url, the nkey path, the creds path, the principal.
+func (f *connFlags) connection() (url, nkey, creds, principal string, err error) {
+	url, nkey, creds, principal = f.url, f.nkey, f.creds, f.principal
+	if url == "" && nkey == "" && creds == "" {
+		name := f.context
+		if name == "" {
+			name = cli.LocalContextName
+		}
+		c, ok, err := cli.LoadContext(name)
+		if err != nil {
+			return "", "", "", "", err
+		}
+		if !ok {
+			return "", "", "", "", fmt.Errorf("no context %q: pass --url with --nkey or --creds, or save one with chronicle context add", name)
+		}
+		url, nkey, creds = c.URL, c.Nkey, c.Creds
+		if principal == "" {
+			principal = c.Principal
+		}
+	}
+	return url, nkey, creds, principal, nil
 }
 
 func harnessName(d declaration.Declaration) string {
