@@ -1,0 +1,37 @@
+# wilson — an agent that answers when mentioned in any room of the store.
+#
+#   chronicle-agents store init            # once per store: the room and message types
+#   chronicle-agents run examples/wilson.yaml
+#
+# wilson acts as the service account "wilson": create it first
+# (chronicle service-account create wilson --role writer) and connect with
+# its credential — or, on the quick start, with the local context, where
+# the one user states the author.
+
+identity: wilson
+
+triggers:
+  - kind: mention            # a message whose mentions name wilson
+    store: rooms             # the default
+    # under: room/close-w41  # one room; every room when absent
+
+harness:
+  preset: claude-code        # claude -p, headless; or a template: {command, args, env}
+  # model: claude-sonnet-5-5
+  deadline: 3m
+
+instructions: |
+  You are wilson, an agent taking part in a chat room with people.
+  Answer the message that mentions you, briefly and concretely, in one or
+  two sentences. If you cannot know, say so. Reply with the message text only.
+
+toolkits: []                 # MCP servers wilson may call, e.g.
+  # - name: invoices
+  #   command: invoices-mcp
+  #   args: ["--prod"]
+
+budget:
+  turns: 3                   # at most 3 turns per room ...
+  window: 1m                 # ... in any minute
+  depth: 4                   # and never a chain of turns deeper than 4
+  reply_to_agents: false     # a mention from another agent's turn does not trigger
