@@ -44,6 +44,22 @@ chronicle instance list --in room/close-w41 --sort seq
 wilson's reply lands as its own message — `kind: turn`, author `wilson`,
 the mention as its parent — a few seconds later.
 
+**The rooms interface.** The same binary serves a page for the rooms: run
+the quick start with a websocket listener (`chronicle up --websocket-port
+9222`), then
+
+```sh
+chronicle-agents web                             # http://127.0.0.1:8080 — the rooms, live
+```
+
+The page is a chronicle client in a browser, on `@impire-io/chronicle`:
+the rooms list, a room read live, writing with the `mentions` filled from
+the `@name`s you type, closing a room. On the quick start it connects as
+the one user with the name you give it; hosted (`--hosted --account A`) it
+signs in through the identity bridge with a GitHub token. The workspace
+announces itself as a `solution` at `store init`, so chronicle's console
+lists it and links here.
+
 ## How it works
 
 - **A room is a type; its messages are children.** `room/<id>` holds a
@@ -73,10 +89,11 @@ the mention as its parent — a few seconds later.
 
 ## Status
 
-Specs 001 and 002: the types, the definition file, the runner with all four
-trigger kinds, the `claude-code`, `pi`, `hermes` and command harnesses,
-tested against chronicle's own embedded quick start (chronicle v0.5.0). A
-web interface for rooms and placement are later specs; the design is in
+Specs 001 to 003: the types, the definition file, the runner with all four
+trigger kinds, the `claude-code`, `pi`, `hermes` and command harnesses, and
+the rooms interface served by the binary, tested against chronicle's own
+embedded quick start (chronicle v0.5.0). Placement is a later spec; the
+design is in
 [`chronicle-agents-hq`](https://github.com/impire-io/chronicle-agents-hq)
 `02-DESIGN`.
 
@@ -87,7 +104,10 @@ make check   # fmt + tidy + build + race-detected tests + lint — everything gr
 ```
 
 Tests boot a real chronicle (its `up` package) and a real NATS server;
-nothing is mocked. Requires Go 1.26 and
+nothing is mocked. `make web` rebuilds the rooms interface (`web/_app`,
+Vite and React) into `web/dist`, which the binary embeds and which is
+committed; the gate fails when the committed build is stale. Requires Go
+1.26, Node 24 and
 [golangci-lint](https://golangci-lint.run). Contributions are accepted under
 the Developer Certificate of Origin; see [CONTRIBUTING.md](CONTRIBUTING.md).
 

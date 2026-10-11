@@ -1,3 +1,4 @@
 bin/
 dist/
 .claude/settings.local.json
+web/_app/node_modules/
