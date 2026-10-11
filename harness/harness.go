@@ -24,7 +24,9 @@ import (
 // placeholders: {{INSTRUCTIONS}} (a file holding the instructions),
 // {{CONTEXT}} (a file holding the composed context, also on stdin),
 // {{MCP_CONFIG}} (the generated MCP configuration file), {{RUN_DIR}} (the
-// run directory), {{MODEL}} (the model's name, when given).
+// run directory), {{MODEL}} (the model's name, when given), and the texts
+// themselves — {{CONTEXT_TEXT}}, and {{PROMPT}} for the instructions and
+// the context as one prompt.
 type Template struct {
 	Command string
 	Args    []string
@@ -69,6 +71,23 @@ var presets = map[string]Template{
 		ToolkitArgs:   []string{"--mcp-config", "{{MCP_CONFIG}}", "--strict-mcp-config", "--allowedTools", "{{MCP_TOOLS}}"},
 		NoToolkitArgs: []string{"--disallowedTools", "*"},
 	},
+	// pi: non-interactive, no tools, no session kept; the instructions
+	// appended to its system prompt from the file, the context attached
+	// as a file. Toolkits are not wired: pi takes extensions, not an MCP
+	// configuration per run.
+	"pi": {
+		Command:   "pi",
+		Args:      []string{"-p", "--no-tools", "--no-session", "--append-system-prompt", "{{INSTRUCTIONS}}", "@{{CONTEXT}}", "The attached file is the room's transcript and what triggered you. Reply as instructed, with the message text only."},
+		ModelArgs: []string{"--model", "{{MODEL}}"},
+	},
+	// hermes: one-shot mode prints only the final response; the
+	// instructions and the context travel as the one prompt. Toolkits are
+	// not wired: hermes configures MCP servers in its own home.
+	"hermes": {
+		Command:   "hermes",
+		Args:      []string{"-z", "{{PROMPT}}"},
+		ModelArgs: []string{"-m", "{{MODEL}}"},
+	},
 	// command runs any executable that reads the context on stdin and
 	// writes the turn on stdout: the tests' harness, and the escape hatch.
 	"command": {},
@@ -82,7 +101,7 @@ func Preset(name string) (Template, bool) {
 
 // PresetNames lists the presets.
 func PresetNames() []string {
-	return []string{"claude-code", "command"}
+	return []string{"claude-code", "pi", "hermes", "command"}
 }
 
 // ErrNoOutput is a harness that exited well and said nothing.
@@ -130,6 +149,10 @@ func Invoke(ctx context.Context, tpl Template, in Input) (string, error) {
 		"{{RUN_DIR}}":      dir,
 		"{{MODEL}}":        in.Model,
 		"{{MCP_TOOLS}}":    mcpToolPatterns(in.Toolkits),
+		// The texts themselves, for a harness that takes its prompt as an
+		// argument rather than a file or stdin.
+		"{{CONTEXT_TEXT}}": in.Context,
+		"{{PROMPT}}":       in.Instructions + "\n\n" + in.Context,
 	}
 	for i, a := range args {
 		for k, v := range subs {

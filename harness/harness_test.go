@@ -89,7 +89,32 @@ func TestPresetsAndToolkitArgs(t *testing.T) {
 	if got := mcpToolPatterns([]Toolkit{{Name: "a"}, {Name: "b"}}); got != "mcp__a,mcp__b" {
 		t.Errorf("patterns = %q", got)
 	}
+	for _, name := range PresetNames() {
+		if name == "command" {
+			continue
+		}
+		if p, ok := Preset(name); !ok || p.Command == "" {
+			t.Errorf("preset %s: %+v", name, p)
+		}
+	}
 	if _, err := os.Stat("/nonexistent"); err == nil {
 		t.Skip()
+	}
+}
+
+// The text placeholders carry the prompt as an argument, the way hermes
+// and pi take it: {{PROMPT}} is the instructions and the context as one.
+func TestTextPlaceholders(t *testing.T) {
+	tpl := Template{Command: "sh", Args: []string{"-c", `printf '%s' "$1"`, "sh", "{{PROMPT}}"}}
+	text, err := Invoke(context.Background(), tpl, Input{Agent: "wilson", Instructions: "be brief", Context: "the room"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "be brief\n\nthe room" {
+		t.Errorf("prompt = %q", text)
+	}
+	tpl = Template{Command: "sh", Args: []string{"-c", `printf '%s' "$1"`, "sh", "{{CONTEXT_TEXT}}"}}
+	if text, _ = Invoke(context.Background(), tpl, Input{Agent: "wilson", Context: "the room"}); text != "the room" {
+		t.Errorf("context text = %q", text)
 	}
 }
