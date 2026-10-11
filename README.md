@@ -21,7 +21,7 @@ Born 2026-10-11, empty. The room model, the definition file, the runner and
 the first harness adapters are being decided in
 [`chronicle-agents-hq`](https://github.com/impire-io/chronicle-agents-hq)
 and land here through its build handoff. The chronicle-side record is
-chronicle-hq decision 0047.
+chronicle-hq decision 0048.
 
 ## Development
 

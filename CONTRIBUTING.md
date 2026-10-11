@@ -4,7 +4,7 @@ This repository is the code of chronicle-agents: humans and autonomous
 agents collaborating in rooms kept as instances in a
 [chronicle](https://github.com/impire-io/chronicle) store. It is a
 solution built *on* chronicle, never a part of it (chronicle-hq decision
-0047). Design lives in `chronicle-agents-hq`; capabilities land here
+0048). Design lives in `chronicle-agents-hq`; capabilities land here
 through its build handoff, never by invention in a pull request. A
 contribution that changes a contract starts as a conversation there.
 
