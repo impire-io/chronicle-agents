@@ -24,7 +24,7 @@ const (
 	HdrScheduler      = "Nats-Scheduler" // provenance, on every tick the server writes
 )
 
-// The op type a registration carries, so the history reads sanely.
+// OpType is the op type a registration carries, so the history reads sanely.
 const OpType = "schedule"
 
 // Path is the schedule's instance path in the tick store.
