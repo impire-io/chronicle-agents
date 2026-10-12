@@ -84,6 +84,8 @@ type room struct {
 	store    string
 	path     string
 	closed   bool
+	direct   bool     // a direct conversation
+	parties  []string // its participants, when direct
 	msgs     []message
 	byOpID   map[string]*message
 	byPath   map[string]*message
@@ -456,10 +458,38 @@ func (r *Runner) foldRoomOp(rm *room, op contract.Op) {
 		rm.closed = true
 	case "create", "rename", contract.OpTypeSnapshot:
 		var data types.RoomData
-		if json.Unmarshal(op.Payload, &data) == nil && data.Status != "" {
+		if op.Type == contract.OpTypeSnapshot {
+			var snap struct {
+				State types.RoomData `json:"state"`
+			}
+			if json.Unmarshal(op.Payload, &snap) == nil {
+				data = snap.State
+			}
+		} else if json.Unmarshal(op.Payload, &data) != nil {
+			return
+		}
+		if data.Status != "" {
 			rm.closed = data.Status == "closed"
 		}
+		if data.IsDirect() {
+			rm.direct = true
+			rm.parties = data.Participants
+		}
 	}
+}
+
+// inConversation says whether the agent is a participant of the room as a
+// direct conversation.
+func (rm *room) inConversation(agent string) bool {
+	if !rm.direct {
+		return false
+	}
+	for _, p := range rm.parties {
+		if p == agent {
+			return true
+		}
+	}
+	return false
 }
 
 // match returns the first trigger entry that selects this operation.
@@ -478,6 +508,15 @@ func (r *Runner) match(store, path string, op contract.Op, msg *message) *declar
 				if name == r.decl.Identity {
 					return t
 				}
+			}
+		case declaration.KindDirect:
+			// A message by the other party in a direct conversation the
+			// agent is in; the author's own messages never reach here.
+			if t.Store != store || msg == nil || msg.Data.Kind == types.KindQuestion {
+				continue
+			}
+			if rm := r.rooms[store+"/"+strings.Join(strings.Split(path, "/")[:2], "/")]; rm != nil && rm.inConversation(r.decl.Identity) {
+				return t
 			}
 		case declaration.KindOp:
 			if t.Store != store {
@@ -508,7 +547,11 @@ func (r *Runner) admit(ctx context.Context, rm *room, trigger message) (rule, re
 	if trigger.Author != "" && !r.decl.Budget.ReplyToAgents && r.kindOf(ctx, trigger.Author) == "service" {
 		return "agent-to-agent: the author is a service account and reply_to_agents is off", "a mention from another agent"
 	}
-	// The window floor: the agent's own turns in this room within the window.
+	// The window floor: the agent's own turns in this room within the
+	// window. A message a person wrote is never refused by it (decision
+	// 0011): a person cannot loop, and their message is their decision to
+	// continue; the floor binds what agents, subjects and schedules start.
+	fromPerson := trigger.Author != "" && r.kindOf(ctx, trigger.Author) == "member"
 	since := time.Now().Add(-r.decl.Budget.Window.Std())
 	own := 0
 	for _, m := range rm.msgs {
@@ -516,7 +559,7 @@ func (r *Runner) admit(ctx context.Context, rm *room, trigger message) (rule, re
 			own++
 		}
 	}
-	if own >= r.decl.Budget.Turns {
+	if own >= r.decl.Budget.Turns && !fromPerson {
 		return fmt.Sprintf("window floor: %d turns in the last %s", own, r.decl.Budget.Window.Std()),
 			fmt.Sprintf("%d turns in %s", own, spoken(r.decl.Budget.Window.Std()))
 	}
@@ -691,7 +734,11 @@ func (r *Runner) observer(rm *room, trigger string) harness.Observer {
 // has to work with.
 func (r *Runner) compose(rm *room, triggers []message) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %s, an agent in the room %s. The room's transcript, oldest first:\n\n", r.decl.Identity, rm.path)
+	if rm.direct {
+		fmt.Fprintf(&b, "You are %s, an agent in a direct conversation (%s) with %s. The conversation so far, oldest first:\n\n", r.decl.Identity, rm.path, otherParty(rm.parties, r.decl.Identity))
+	} else {
+		fmt.Fprintf(&b, "You are %s, an agent in the room %s. The room's transcript, oldest first:\n\n", r.decl.Identity, rm.path)
+	}
 	for _, m := range rm.msgs {
 		kind := m.Data.Kind
 		if kind == "" {
@@ -732,6 +779,16 @@ func (r *Runner) means() string {
 		fmt.Fprintf(&b, "Through the %s server you may read this room or another (read_room, list_rooms) and ask the people you are answering a question (ask) when you need their answer before you can finish; a tool call that needs permission is asked of them the same way.\n", mcpserver.ServerName)
 	}
 	return b.String()
+}
+
+// otherParty names the participant that is not the agent.
+func otherParty(parties []string, agent string) string {
+	for _, p := range parties {
+		if p != agent {
+			return p
+		}
+	}
+	return "someone"
 }
 
 func toolkitNames(tks []declaration.Toolkit) string {

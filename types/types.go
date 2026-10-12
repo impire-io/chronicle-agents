@@ -32,16 +32,30 @@ const (
 	KindQuestion = "question"
 )
 
-// RoomDefinition is the room type: a title, a purpose, a status; create,
-// rename and close, all merge; compactable; messages as children.
+// Room kinds.
+const (
+	// RoomKindRoom is a room opened for a purpose: the default.
+	RoomKindRoom = "room"
+	// RoomKindDirect is a direct conversation between two parties — a
+	// person and an agent, or two people — the place a person starts.
+	RoomKindDirect = "direct"
+)
+
+// RoomDefinition is the room type: a title, a purpose, a status, a kind
+// (a room, or a direct conversation with its two participants), where it
+// was broken out from; create, rename and close, all merge; compactable;
+// messages as children.
 func RoomDefinition() client.TypeDefinition {
 	return client.TypeDefinition{
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "title":   {"type": "string"},
-    "purpose": {"type": "string"},
-    "status":  {"type": "string", "enum": ["open", "closed"]}
+    "title":        {"type": "string"},
+    "purpose":      {"type": "string"},
+    "status":       {"type": "string", "enum": ["open", "closed"]},
+    "kind":         {"type": "string", "enum": ["room", "direct"]},
+    "participants": {"type": "array", "items": {"type": "string"}},
+    "origin":       {"type": "string"}
   },
   "required": ["title"]
 }`),
@@ -161,4 +175,34 @@ type RoomData struct {
 	Title   string `json:"title"`
 	Purpose string `json:"purpose,omitempty"`
 	Status  string `json:"status,omitempty"`
+	// Kind is room (the default) or direct.
+	Kind string `json:"kind,omitempty"`
+	// Participants are a direct conversation's two parties, sorted.
+	Participants []string `json:"participants,omitempty"`
+	// Origin is the path of the message a room was broken out from, when
+	// it was.
+	Origin string `json:"origin,omitempty"`
+}
+
+// IsDirect says whether the room is a direct conversation.
+func (r RoomData) IsDirect() bool { return r.Kind == RoomKindDirect }
+
+// DirectID is the id of the direct conversation between two parties: the
+// same whoever starts it, so one pair has one conversation.
+func DirectID(a, b string) string {
+	if b < a {
+		a, b = b, a
+	}
+	return "direct--" + a + "--" + b
+}
+
+// DirectPath is the path of the direct conversation between two parties.
+func DirectPath(a, b string) string { return Room + "/" + DirectID(a, b) }
+
+// DirectRoom is the state a direct conversation is created with.
+func DirectRoom(a, b string) RoomData {
+	if b < a {
+		a, b = b, a
+	}
+	return RoomData{Title: a + " & " + b, Purpose: "a direct conversation", Status: "open", Kind: RoomKindDirect, Participants: []string{a, b}}
 }

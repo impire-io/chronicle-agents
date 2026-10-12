@@ -108,10 +108,29 @@ type seen struct {
 }
 
 // turns lists wilson's turns in r1, by sequence.
-func (w *world) turns() []seen {
+func (w *world) turns() []seen { return w.turnsIn("room/r1") }
+
+// waitTurnsIn waits until n turns exist in a room, or fails.
+func (w *world) waitTurnsIn(room string, n int) []seen {
+	w.t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		got := w.turnsIn(room)
+		if len(got) >= n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			w.t.Fatalf("after 15s: %d turns in %s, want %d: %+v", len(got), room, n, got)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// turnsIn lists wilson's turns in a room, by sequence.
+func (w *world) turnsIn(room string) []seen {
 	w.t.Helper()
 	var out []seen
-	for info, err := range w.admin.ListInstances(w.ctx, "rooms", client.Under("room/r1")) {
+	for info, err := range w.admin.ListInstances(w.ctx, "rooms", client.Under(room)) {
 		if err != nil {
 			w.t.Fatal(err)
 		}
@@ -238,13 +257,15 @@ func TestSelfMentionAndClosedRoomTriggerNothing(t *testing.T) {
 
 func TestTheWindowFloorRefusesWithoutATrace(t *testing.T) {
 	w := newWorld(t)
-	stop := w.serve(wilson + "budget:\n  turns: 2\n  window: 1m\n")
+	// The floor binds what agents start (decision 0011): ada, a service
+	// account, is allowed to trigger wilson here and runs into it.
+	stop := w.serve(wilson + "budget:\n  turns: 2\n  window: 1m\n  reply_to_agents: true\n")
 	defer stop()
-	w.say("admin", "m-1", "@wilson one", "wilson")
+	w.say("ada", "m-1", "@wilson one", "wilson")
 	w.waitTurns(1)
-	w.say("admin", "m-2", "@wilson two", "wilson")
+	w.say("ada", "m-2", "@wilson two", "wilson")
 	w.waitTurns(2)
-	w.say("admin", "m-3", "@wilson three", "wilson")
+	w.say("ada", "m-3", "@wilson three", "wilson")
 	got := w.settle()
 	if len(got) != 2 {
 		t.Fatalf("turns = %d, want 2: the third is refused", len(got))
@@ -306,4 +327,18 @@ func TestTurnIDIsStable(t *testing.T) {
 	if a == TurnID("wilson", []string{"y", "x"}) || a == TurnID("ada", []string{"x", "y"}) {
 		t.Error("ids collide across order or agent")
 	}
+}
+
+// A person's message is never refused by the window floor (decision 0011):
+// a person cannot loop, and their message is their decision to continue.
+func TestAPersonIsNeverRefusedByTheWindowFloor(t *testing.T) {
+	w := newWorld(t)
+	stop := w.serve(wilson + "budget:\n  turns: 1\n  window: 1m\n")
+	defer stop()
+	w.say("admin", "m-1", "@wilson one", "wilson")
+	w.waitTurns(1)
+	w.say("admin", "m-2", "@wilson two", "wilson")
+	w.waitTurns(2)
+	w.say("admin", "m-3", "@wilson three", "wilson")
+	w.waitTurns(3)
 }

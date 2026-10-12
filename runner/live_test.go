@@ -128,14 +128,14 @@ func TestAnAdmittedMentionIsPickedUpAndDone(t *testing.T) {
 func TestAWindowRefusalIsSaidInThePersonsWords(t *testing.T) {
 	w := newWorld(t)
 	e := listen(t, w.admin.Conn())
-	stop := w.serve(wilson + "budget:\n  turns: 2\n  window: 1m\n")
+	stop := w.serve(wilson + "budget:\n  turns: 2\n  window: 1m\n  reply_to_agents: true\n")
 	defer stop()
-	w.say("admin", "m-1", "@wilson one", "wilson")
+	w.say("ada", "m-1", "@wilson one", "wilson")
 	w.waitTurns(1)
-	w.say("admin", "m-2", "@wilson two", "wilson")
+	w.say("ada", "m-2", "@wilson two", "wilson")
 	w.waitTurns(2)
 	before := streamMsgs(t, w.admin.Conn(), "rooms")
-	w.say("admin", "m-3", "@wilson three", "wilson")
+	w.say("ada", "m-3", "@wilson three", "wilson")
 	refused := e.wait(t, live.Refused)
 	if refused.Trigger != "room/r1/messages/m-3" || refused.Reason != "2 turns in a minute" {
 		t.Errorf("refused = %+v", refused)

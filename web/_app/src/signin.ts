@@ -80,10 +80,18 @@ function hold(tokens: Tokens | undefined): void {
 /** Sends the browser to GitHub to sign in. */
 export async function startSignIn(profile: InstallProfile): Promise<void> {
   const { verifier, challenge } = await pkcePair();
-  const pending: Pending = { state: randomToken(), verifier, redirectUri: redirectURI() };
+  const pending: Pending = {
+    state: randomToken(),
+    verifier,
+    redirectUri: redirectURI(),
+  };
   write(PENDING, pending);
   window.location.assign(
-    githubAuthorizeURL(profile, { redirectUri: pending.redirectUri, state: pending.state, codeChallenge: challenge }),
+    githubAuthorizeURL(profile, {
+      redirectUri: pending.redirectUri,
+      state: pending.state,
+      codeChallenge: challenge,
+    }),
   );
 }
 
@@ -99,7 +107,10 @@ export type Return =
  * a refusal otherwise. Pure: the tests hand it the search and the pending
  * sign-in.
  */
-export function readReturn(search: string, pending: Pending | undefined): Return {
+export function readReturn(
+  search: string,
+  pending: Pending | undefined,
+): Return {
   const q = new URLSearchParams(search);
   const code = q.get("code");
   const state = q.get("state");
@@ -107,23 +118,32 @@ export function readReturn(search: string, pending: Pending | undefined): Return
   if (!code && !error) return { kind: "none" };
   if (error) return { kind: "refused", why: `GitHub said: ${error}` };
   if (!pending || pending.state !== state || !code) {
-    return { kind: "refused", why: "this return from GitHub is not the sign-in this tab started; sign in again" };
+    return {
+      kind: "refused",
+      why: "this return from GitHub is not the sign-in this tab started; sign in again",
+    };
   }
   return { kind: "code", code, pending };
 }
 
 /** The outcome of completing a sign-in. */
-export type Completed = { kind: "none" } | { kind: "signed-in"; tokens: Tokens } | { kind: "refused"; why: string };
+export type Completed =
+  | { kind: "none" }
+  | { kind: "signed-in"; tokens: Tokens }
+  | { kind: "refused"; why: string };
 
 /**
  * Completes a sign-in when the page is GitHub's return: the code is traded
  * at control, and the address loses the code either way.
  */
-export async function completeSignIn(profile: InstallProfile): Promise<Completed> {
+export async function completeSignIn(
+  profile: InstallProfile,
+): Promise<Completed> {
   const url = new URL(window.location.href);
   const ret = readReturn(url.search, read<Pending>(PENDING));
   if (ret.kind === "none") return { kind: "none" };
-  for (const k of ["code", "state", "error", "error_description", "error_uri"]) url.searchParams.delete(k);
+  for (const k of ["code", "state", "error", "error_description", "error_uri"])
+    url.searchParams.delete(k);
   window.history.replaceState(null, "", url.pathname + url.search);
   write(PENDING, undefined);
   if (ret.kind === "refused") return ret;
@@ -138,15 +158,24 @@ export async function completeSignIn(profile: InstallProfile): Promise<Completed
     hold(tokens);
     return { kind: "signed-in", tokens };
   } catch (err) {
-    return { kind: "refused", why: err instanceof Error ? err.message : String(err) };
+    return {
+      kind: "refused",
+      why: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
 /** The access token, refreshed first when it lapses within five minutes and a refresh token is held. */
-export async function freshToken(profile: InstallProfile): Promise<string | undefined> {
+export async function freshToken(
+  profile: InstallProfile,
+): Promise<string | undefined> {
   const t = heldTokens();
   if (!t) return undefined;
-  if (t.refresh && t.expiresAt !== undefined && t.expiresAt - Date.now() < REFRESH_AHEAD_MS) {
+  if (
+    t.refresh &&
+    t.expiresAt !== undefined &&
+    t.expiresAt - Date.now() < REFRESH_AHEAD_MS
+  ) {
     try {
       const next = fromGrant(await refreshGithubToken(profile, t.refresh));
       hold({ ...next, ...(next.refresh ? {} : { refresh: t.refresh }) });
@@ -208,7 +237,8 @@ export function chooseAccount(
         };
   }
   if (memberships.length === 0) return { kind: "none" };
-  if (memberships.length === 1) return { kind: "enter", account: memberships[0]!.account };
+  if (memberships.length === 1)
+    return { kind: "enter", account: memberships[0]!.account };
   const back = memberships.find((m) => m.account === remembered);
   return back ? { kind: "enter", account: back.account } : { kind: "choose" };
 }
