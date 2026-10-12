@@ -1,8 +1,11 @@
 // Package web serves the rooms interface: the static application built
-// from _app/ into dist/ and embedded here, plus one dynamic document,
-// /config.json, that tells the browser how to reach chronicle
-// (chronicle-agents-hq design 03). The binary adds nothing else — the
-// interface is a chronicle client that happens to run in a browser.
+// from _app/ into dist/ and embedded here, plus two dynamic documents —
+// /config.json, which tells the browser how to reach chronicle, and
+// /install.json, the workspace declaration as chronicle-hq design 14's
+// install manifest, which chronicle's console enables a workspace from
+// (chronicle-agents-hq design 03, decision 0008). The binary adds nothing
+// else — the interface is a chronicle client that happens to run in a
+// browser.
 package web
 
 import (
@@ -16,6 +19,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/impire-io/chronicle-agents/types"
 )
 
 //go:embed all:dist
@@ -46,9 +51,15 @@ type Config struct {
 	Store string `json:"store"`
 	// TickStore is the tick store, shown beside the rooms.
 	TickStore string `json:"tickStore,omitempty"`
+	// Version is the binary's, carried on /install.json, never on
+	// /config.json.
+	Version string `json:"-"`
+	// PublicURL is the address the interface is reachable at, the
+	// manifest's url.
+	PublicURL string `json:"-"`
 }
 
-// Handler serves the interface and its configuration.
+// Handler serves the interface, its configuration and its install manifest.
 func Handler(cfg Config) (http.Handler, error) {
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {
@@ -60,11 +71,28 @@ func Handler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	manifest, err := json.Marshal(types.Declaration(cfg.Store, cfg.TickStore).Manifest(cfg.Version, cfg.PublicURL))
+	if err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/config.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(body)
+	})
+	// The manifest answers any origin: chronicle's console fetches it from
+	// its own origin, and it holds names and type definitions only.
+	mux.HandleFunc("/install.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(manifest)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// A file the build produced is served as is; anything else is the

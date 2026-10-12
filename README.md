@@ -72,6 +72,13 @@ section links there. `chronicle-agents web --hosted [--account A]` is the
 same page served anywhere else, pinned to one account when `--account` is
 given.
 
+**Enabling from the console.** The binary also serves `/install.json`: the
+workspace — the stores, the types, the announcement — as an install
+manifest, generated from the same declaration `store init` applies. On
+the hosted service chronicle's console reads it and *Enable* creates the
+workspace in your account without the CLI; `store init` remains the way
+for the CLI and a self-hosted chronicle, and a test holds the two equal.
+
 ## How it works
 
 - **A room is a type; its messages are children.** `room/<id>` holds a
