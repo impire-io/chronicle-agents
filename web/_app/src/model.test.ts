@@ -1,6 +1,22 @@
 import type { Op } from "@impire-io/chronicle";
 import { describe, expect, it } from "vitest";
-import { age, emptyWorkspace, fold, mentionsOf, mintId, pathOf, roomIdFrom, roomOrder } from "./model";
+import {
+  age,
+  completeHandle,
+  emptyWorkspace,
+  fold,
+  GENERAL,
+  groupMessages,
+  handleBeingTyped,
+  lastActiveRoom,
+  mentionsOf,
+  mintId,
+  needsGeneral,
+  pathOf,
+  pickerCandidates,
+  roomIdFrom,
+  roomOrder,
+} from "./model";
 
 const op = (seq: number, path: string, type: string, author: string, payload: unknown, id = `op-${seq}`): Op => ({
   id,
@@ -61,5 +77,76 @@ describe("ids and ages", () => {
     expect(age("2026-10-12T11:59:58Z", now)).toBe("now");
     expect(age("2026-10-12T11:58:00Z", now)).toBe("2m");
     expect(age("", now)).toBe("");
+  });
+});
+
+describe("the chat's reading of the record (decision 0009)", () => {
+  const seeded = () => {
+    const ws = emptyWorkspace();
+    fold(ws, "rooms", op(1, `room/${GENERAL}`, "create", "admin", { title: "General", purpose: "where a workspace starts", status: "open" }));
+    fold(ws, "rooms", op(2, "room/close-w41", "create", "admin", { title: "Week 41 close", status: "open" }));
+    fold(ws, "rooms", op(3, "room/close-w41/messages/m-1", "create", "daan", { text: "@wilson paid?", mentions: ["wilson"] }));
+    fold(ws, "rooms", op(4, "room/close-w41/messages/m-2", "create", "daan", { text: "and 346?" }));
+    fold(ws, "rooms", op(5, "room/close-w41/messages/m-3", "create", "wilson", { text: "345 yes, 346 no", kind: "turn" }));
+    fold(ws, "rooms", op(6, "room/old", "create", "admin", { title: "Old", status: "open" }));
+    fold(ws, "rooms", op(7, "room/old/messages/m-1", "create", "daan", { text: "later" }));
+    fold(ws, "rooms", op(8, "room/old", "close", "admin", {}));
+    return ws;
+  };
+
+  it("groups consecutive messages by one author", () => {
+    const ws = seeded();
+    const groups = groupMessages(ws.rooms.get("room/close-w41")!.messages);
+    expect(groups.map((g) => [g[0].author, g.length])).toEqual([
+      ["daan", 2],
+      ["wilson", 1],
+    ]);
+  });
+
+  it("opens in the open room that last had a message, else General, else nothing", () => {
+    const ws = seeded();
+    expect(lastActiveRoom(ws)?.id).toBe("close-w41"); // old had the last message but is closed
+    const quiet = emptyWorkspace();
+    fold(quiet, "rooms", op(1, `room/${GENERAL}`, "create", "admin", { title: "General", status: "open" }));
+    fold(quiet, "rooms", op(2, "room/other", "create", "admin", { title: "Other", status: "open" }));
+    expect(lastActiveRoom(quiet)?.id).toBe(GENERAL);
+    expect(lastActiveRoom(emptyWorkspace())).toBeUndefined();
+  });
+
+  it("makes General only when the record is read and holds no room", () => {
+    expect(needsGeneral(emptyWorkspace(), false)).toBe(false);
+    expect(needsGeneral(emptyWorkspace(), true)).toBe(true);
+    expect(needsGeneral(seeded(), true)).toBe(false);
+  });
+
+  it("knows the agents the runner announced", () => {
+    const ws = emptyWorkspace();
+    fold(ws, "rooms", op(1, "agent/wilson", "create", "wilson", { name: "wilson", description: "answers about invoices", harness: "claude-code", triggers: ["mention in rooms"], version: "0.2.0" }));
+    fold(ws, "rooms", op(2, "agent/wilson", "update", "wilson", { description: "answers about invoices and payments" }));
+    expect(ws.agents.get("wilson")).toEqual({
+      name: "wilson",
+      description: "answers about invoices and payments",
+      harness: "claude-code",
+      triggers: ["mention in rooms"],
+      version: "0.2.0",
+    });
+    expect(ws.rooms.size).toBe(0);
+  });
+
+  it("offers agents first with their line, then people, never oneself, and completes the handle", () => {
+    const agents = [{ name: "wilson", description: "answers about invoices", harness: "claude-code", triggers: [], version: "" }];
+    const items = pickerCandidates("", agents, ["wilson", "probe-sa"], ["daan", "ada"], "daan", (n) => n === "wilson");
+    expect(items.map((i) => [i.name, i.kind, i.online ?? false])).toEqual([
+      ["wilson", "agent", true],
+      ["probe-sa", "agent", false],
+      ["ada", "person", false],
+    ]);
+    expect(items[0].description).toBe("answers about invoices");
+    expect(pickerCandidates("wi", agents, [], ["daan"], "daan").map((i) => i.name)).toEqual(["wilson"]);
+    expect(handleBeingTyped("hello @wi")).toBe("wi");
+    expect(handleBeingTyped("hello @")).toBe("");
+    expect(handleBeingTyped("hello")).toBeUndefined();
+    expect(handleBeingTyped("mail daan@x")).toBeUndefined();
+    expect(completeHandle("hello @wi", "wilson")).toBe("hello @wilson ");
   });
 });
