@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -25,6 +26,10 @@ const (
 	KindMessage = "message"
 	KindTurn    = "turn"
 	KindSystem  = "system"
+	// KindQuestion is a question an agent asks the people it answers —
+	// its own, or a permission its harness needs — carrying the choices it
+	// offers; the answer is a person's message whose reply_to names it.
+	KindQuestion = "question"
 )
 
 // RoomDefinition is the room type: a title, a purpose, a status; create,
@@ -50,17 +55,22 @@ func RoomDefinition() client.TypeDefinition {
 	}
 }
 
-// MessageDefinition is the message type: text, kind, mentions, reply_to;
-// one operation, create; full history — a message is never compacted away.
+// MessageDefinition is the message type: text, kind, mentions, reply_to,
+// and for a turn the steps the harness took and what the turn cost, for
+// a question the choices it offers; one operation, create; full history —
+// a message is never compacted away.
 func MessageDefinition() client.TypeDefinition {
 	return client.TypeDefinition{
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "text":     {"type": "string"},
-    "kind":     {"type": "string", "enum": ["message", "turn", "system"]},
+    "kind":     {"type": "string", "enum": ["message", "turn", "system", "question"]},
     "mentions": {"type": "array", "items": {"type": "string"}},
-    "reply_to": {"type": "string"}
+    "reply_to": {"type": "string"},
+    "choices":  {"type": "array", "items": {"type": "string"}},
+    "steps":    {"type": "array", "items": {"type": "object"}},
+    "usage":    {"type": "object"}
   },
   "required": ["text"]
 }`),
@@ -93,6 +103,57 @@ type MessageData struct {
 	Kind     string   `json:"kind,omitempty"`
 	Mentions []string `json:"mentions,omitempty"`
 	ReplyTo  string   `json:"reply_to,omitempty"`
+	// Choices are what a question offers, in order; a free answer is
+	// always allowed as well.
+	Choices []string `json:"choices,omitempty"`
+	// Steps are what the harness did on the way to a turn: each tool it
+	// called, in order, with a bounded summary of the input and the result
+	// — the record of "which agent checked what".
+	Steps []Step `json:"steps,omitempty"`
+	// Usage is what the turn cost, as the harness reported it.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Step is one tool call within a turn.
+type Step struct {
+	// Tool is the tool's name as the harness names it: Bash, Read,
+	// mcp__invoices__lookup.
+	Tool string `json:"tool"`
+	// Input is a bounded summary of what the tool was asked: the command,
+	// the path, the query — never the whole input.
+	Input string `json:"input,omitempty"`
+	// Output is a bounded summary of what came back.
+	Output string `json:"output,omitempty"`
+	// OK is false when the tool reported an error or was denied.
+	OK bool `json:"ok"`
+	// Took is how long the call ran, in milliseconds.
+	Took int64 `json:"took_ms,omitempty"`
+}
+
+// Usage is what a turn cost.
+type Usage struct {
+	Model        string  `json:"model,omitempty"`
+	InputTokens  int64   `json:"input_tokens,omitempty"`
+	OutputTokens int64   `json:"output_tokens,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
+	// Turns is how many rounds the harness took: one with no tool, one
+	// more per tool call it waited on.
+	Turns int `json:"turns,omitempty"`
+	// Session is the harness's own session id, for its logs.
+	Session string `json:"session,omitempty"`
+}
+
+// StepSummaryLimit bounds what a step keeps of an input or an output.
+const StepSummaryLimit = 400
+
+// Bound cuts a text to StepSummaryLimit runes, marking the cut.
+func Bound(s string) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) <= StepSummaryLimit {
+		return s
+	}
+	return string(r[:StepSummaryLimit]) + "…"
 }
 
 // RoomData is a room's state.

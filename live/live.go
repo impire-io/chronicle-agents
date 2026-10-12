@@ -53,9 +53,41 @@ const (
 	Refused State = "refused"
 	// Failed: the harness did not answer; Reason says why.
 	Failed State = "failed"
+	// Writing: the harness is writing text; Text carries the turn's text
+	// so far, whole each time, so a late reader needs no earlier signal.
+	Writing State = "writing"
+	// Step: the harness called a tool; Step says which, and whether the
+	// call started or came back.
+	Step State = "step"
+	// Waiting: the harness asked the people in the room a question and
+	// waits for the answer; Trigger is the question's path.
+	Waiting State = "waiting"
 	// Online: the agent's presence, said every PresenceEvery.
 	Online State = "online"
 )
+
+// StepPhase is where a step is.
+type StepPhase string
+
+// The phases a step signal may carry.
+const (
+	// Started: the tool was called.
+	Started StepPhase = "started"
+	// Finished: the tool came back, well or not.
+	Finished StepPhase = "finished"
+)
+
+// StepSignal is one tool call as the runner saw it happen.
+type StepSignal struct {
+	Tool   string    `json:"tool"`
+	Input  string    `json:"input,omitempty"`
+	Output string    `json:"output,omitempty"`
+	Phase  StepPhase `json:"phase"`
+	OK     bool      `json:"ok"`
+}
+
+// WritingEvery bounds how often "writing" repeats while text streams.
+const WritingEvery = 300 * time.Millisecond
 
 // The cadences, as design 02 states them.
 const (
@@ -75,6 +107,10 @@ type Signal struct {
 	Trigger string    `json:"trigger,omitempty"`
 	Reason  string    `json:"reason,omitempty"`
 	At      time.Time `json:"at"`
+	// Text is the turn's text so far, on a writing signal.
+	Text string `json:"text,omitempty"`
+	// Step is the tool call, on a step signal.
+	Step *StepSignal `json:"step,omitempty"`
 }
 
 // Presence is an agent's heartbeat.

@@ -20,12 +20,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/impire-io/chronicle-agents/declaration"
 	"github.com/impire-io/chronicle-agents/harness"
 	"github.com/impire-io/chronicle-agents/live"
+	"github.com/impire-io/chronicle-agents/mcpserver"
 	"github.com/impire-io/chronicle-agents/types"
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -41,9 +44,21 @@ type Runner struct {
 	log     *slog.Logger
 	version string
 	since   time.Time
+	// conn is how the runner was told to reach chronicle, handed to the
+	// server it starts for each turn; exe is this binary, which serves it.
+	conn Connection
+	exe  string
 
 	rooms   map[string]*room  // store + "/" + room path
 	members map[string]string // principal -> kind, from the registry
+}
+
+// Connection is the URL and the one credential file the runner connects
+// with, as the command line or the context gave them.
+type Connection struct {
+	URL   string
+	Nkey  string
+	Creds string
 }
 
 // Option configures a runner.
@@ -55,6 +70,14 @@ func Version(v string) Option {
 	return func(r *Runner) { r.version = v }
 }
 
+// WithConnection tells the runner how it reached chronicle, so the MCP
+// server it starts for each turn connects the same way under the agent's
+// credential. Without it the harness gets no server: no questions, no
+// permission requests, no rooms beyond the context.
+func WithConnection(c Connection) Option {
+	return func(r *Runner) { r.conn = c }
+}
+
 // room is the runner's projection of one room: what the record says
 // about it, folded from the tail, rebuilt from the tail.
 type room struct {
@@ -63,6 +86,7 @@ type room struct {
 	closed   bool
 	msgs     []message
 	byOpID   map[string]*message
+	byPath   map[string]*message
 	thinking bool
 	pending  []message // triggers queued while a turn is composed
 }
@@ -110,7 +134,7 @@ func New(c *client.Client, decl declaration.Declaration, log *slog.Logger, opts 
 			return nil, errors.New("harness.preset command: needs a template with the command to run; name it under harness.template")
 		}
 	} else {
-		tpl = harness.Template{Command: decl.Harness.Template.Command, Args: decl.Harness.Template.Args, Env: decl.Harness.Template.Env}
+		tpl = harness.Template{Command: decl.Harness.Template.Command, Args: decl.Harness.Template.Args, Env: decl.Harness.Template.Env, Output: harness.Output(decl.Harness.Template.Output)}
 	}
 	if log == nil {
 		log = slog.Default()
@@ -127,6 +151,9 @@ func New(c *client.Client, decl declaration.Declaration, log *slog.Logger, opts 
 	for _, o := range opts {
 		o(r)
 	}
+	if exe, err := os.Executable(); err == nil {
+		r.exe = exe
+	}
 	return r, nil
 }
 
@@ -137,11 +164,17 @@ func (r *Runner) announcement() types.AgentData {
 	for _, t := range r.decl.Triggers {
 		triggers = append(triggers, t.Describe())
 	}
+	var tools []string
+	tools = append(tools, r.decl.Harness.Tools...)
+	for _, tk := range r.decl.Toolkits {
+		tools = append(tools, tk.Name)
+	}
 	return types.AgentData{
 		Name:        r.decl.Identity,
 		Description: r.decl.Description,
 		Harness:     r.decl.HarnessName(),
 		Triggers:    triggers,
+		Tools:       tools,
 		Version:     r.version,
 	}
 }
@@ -186,9 +219,16 @@ func (r *Runner) presence(ctx context.Context) {
 
 // signal says one moment of a turn in the room's live subject.
 func (r *Runner) signal(rm *room, state live.State, trigger, reason string) {
-	sig := live.Signal{Agent: r.decl.Identity, State: state, Trigger: trigger, Reason: reason, At: time.Now()}
+	r.say(rm, live.Signal{State: state, Trigger: trigger, Reason: reason})
+}
+
+// say publishes a signal in the room's live subject under the agent's
+// name, now.
+func (r *Runner) say(rm *room, sig live.Signal) {
+	sig.Agent = r.decl.Identity
+	sig.At = time.Now()
 	if err := live.Publish(r.c.Conn(), live.RoomSubject(rm.store, live.RoomID(rm.path)), sig); err != nil {
-		r.log.Debug("signal not said", "room", rm.path, "state", state, "err", err)
+		r.log.Debug("signal not said", "room", rm.path, "state", sig.State, "err", err)
 	}
 }
 
@@ -209,7 +249,7 @@ type event struct {
 type turnResult struct {
 	room     *room
 	triggers []message
-	text     string
+	res      harness.Result
 	err      error
 }
 
@@ -289,7 +329,7 @@ func (r *Runner) Serve(ctx context.Context) error {
 
 // observe folds one operation into the projection and, if it is live,
 // runs it through the triggers.
-func (r *Runner) observe(ctx context.Context, store string, op contract.Op, live bool, events chan<- event) {
+func (r *Runner) observe(ctx context.Context, store string, op contract.Op, isLive bool, events chan<- event) {
 	path := contract.TailPath(contract.InstanceFromSubject(store, op.Subject))
 	toks := strings.Split(path, "/")
 	if len(toks) < 2 {
@@ -313,15 +353,31 @@ func (r *Runner) observe(ctx context.Context, store string, op contract.Op, live
 			rm.msgs = append(rm.msgs, m)
 			msg = &rm.msgs[len(rm.msgs)-1]
 			rm.byOpID[op.ID] = msg
+			rm.byPath[path] = msg
 		default:
 			return
 		}
 	}
-	if !live {
+	if !isLive {
 		return // history: remembered, never answered
 	}
 	if op.Author == r.decl.Identity {
-		return // self-exclusion is mechanical
+		// Self-exclusion is mechanical. A question of the agent's own,
+		// landing while its turn runs, is said live so the room knows the
+		// turn waits on an answer.
+		if msg != nil && msg.Data.Kind == types.KindQuestion && rm.thinking {
+			r.say(rm, live.Signal{State: live.Waiting, Trigger: path, Text: msg.Data.Text})
+		}
+		return
+	}
+	if msg != nil && msg.Data.ReplyTo != "" {
+		// An answer to a question the agent asked belongs to the turn that
+		// asked it — the server waiting on it reads it from the tail — and
+		// is not a trigger of its own.
+		if q := rm.byPath[msg.Data.ReplyTo]; q != nil && q.Author == r.decl.Identity && q.Data.Kind == types.KindQuestion {
+			r.log.Info("answered", "room", rm.path, "question", q.Path, "by", op.Author)
+			return
+		}
 	}
 	entry := r.match(store, path, op, msg)
 	if entry == nil {
@@ -388,7 +444,7 @@ func (r *Runner) room(store, path string) *room {
 	key := store + "/" + path
 	rm, ok := r.rooms[key]
 	if !ok {
-		rm = &room{store: store, path: path, byOpID: map[string]*message{}}
+		rm = &room{store: store, path: path, byOpID: map[string]*message{}, byPath: map[string]*message{}}
 		r.rooms[key] = rm
 	}
 	return rm
@@ -518,17 +574,23 @@ func (r *Runner) kindOf(ctx context.Context, principal string) string {
 // off the serving loop; the result comes back as an event.
 func (r *Runner) start(ctx context.Context, rm *room, triggers []message, events chan<- event) {
 	rm.thinking = true
+	deadline := r.decl.Harness.Deadline.Std()
 	input := harness.Input{
 		Agent:        r.decl.Identity,
 		Instructions: r.decl.Instructions,
 		Context:      r.compose(rm, triggers),
 		Model:        r.decl.Harness.Model,
-		Deadline:     r.decl.Harness.Deadline.Std(),
+		Tools:        r.decl.Harness.Tools,
+		Workdir:      r.decl.Harness.Workdir,
+		Deadline:     deadline,
 	}
 	for _, tk := range r.decl.Toolkits {
 		input.Toolkits = append(input.Toolkits, harness.Toolkit{Name: tk.Name, Command: tk.Command, Args: tk.Args, Env: tk.Env})
 	}
 	last := triggers[len(triggers)-1]
+	if server := r.server(ctx, rm, triggers, time.Now().Add(deadline)); server != nil {
+		input.Server = server
+	}
 	r.log.Info("turn", "room", rm.path, "triggers", len(triggers), "trigger", last.identity())
 	r.signal(rm, live.PickedUp, last.Path, "")
 	go func() {
@@ -546,17 +608,87 @@ func (r *Runner) start(ctx context.Context, rm *room, triggers []message, events
 				}
 			}
 		}()
-		text, err := harness.Invoke(ctx, r.tpl, input)
+		res, err := harness.Invoke(ctx, r.tpl, input, r.observer(rm, last.Path))
 		stop()
 		if err == nil {
-			r.log.Info("harness answered", "room", rm.path, "took", time.Since(started).Round(time.Millisecond))
+			r.log.Info("harness answered", "room", rm.path, "steps", len(res.Steps), "took", time.Since(started).Round(time.Millisecond))
 		}
-		events <- event{done: &turnResult{room: rm, triggers: triggers, text: text, err: err}}
+		events <- event{done: &turnResult{room: rm, triggers: triggers, res: res, err: err}}
 	}()
 }
 
+// server is the runner's own MCP server for this turn — how the harness
+// reads the rooms, asks the people in the room, and routes a permission
+// request to them — or nil when the runner has no connection facts to
+// hand it.
+func (r *Runner) server(ctx context.Context, rm *room, triggers []message, deadline time.Time) *harness.Toolkit {
+	if r.conn.URL == "" || r.exe == "" {
+		return nil
+	}
+	ids := make([]string, 0, len(triggers))
+	var askers []string
+	seen := map[string]bool{}
+	for _, t := range triggers {
+		ids = append(ids, t.identity())
+		if t.Author != "" && !seen[t.Author] && r.kindOf(ctx, t.Author) != "service" {
+			seen[t.Author] = true
+			askers = append(askers, t.Author)
+		}
+	}
+	cfg := mcpserver.Config{
+		URL: r.conn.URL, Nkey: r.conn.Nkey, Creds: r.conn.Creds,
+		Agent: r.decl.Identity, Store: rm.store, Room: rm.path,
+		Turn: TurnID(r.decl.Identity, ids), Askers: askers, Deadline: deadline,
+	}
+	return &harness.Toolkit{Name: mcpserver.ServerName, Command: r.exe, Args: []string{"mcp"}, Env: cfg.Env()}
+}
+
+// observer says what the harness does as it does it: the text so far, at
+// most every WritingEvery; each tool call as it starts and comes back.
+func (r *Runner) observer(rm *room, trigger string) harness.Observer {
+	var mu sync.Mutex
+	var lastText time.Time
+	var pendingText string
+	var timer *time.Timer
+	flush := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if pendingText == "" {
+			return
+		}
+		r.say(rm, live.Signal{State: live.Writing, Trigger: trigger, Text: pendingText})
+		pendingText = ""
+		lastText = time.Now()
+	}
+	return func(ev harness.Event) {
+		switch {
+		case ev.Step != nil:
+			sig := live.StepSignal{Tool: ev.Step.Tool, Input: ev.Step.Input, Phase: live.Started}
+			if ev.Finished {
+				sig.Phase, sig.Output, sig.OK = live.Finished, ev.Step.Output, ev.Step.OK
+			}
+			r.say(rm, live.Signal{State: live.Step, Trigger: trigger, Step: &sig})
+		case ev.Text != "":
+			mu.Lock()
+			pendingText = ev.Text
+			due := live.WritingEvery - time.Since(lastText)
+			if timer != nil {
+				timer.Stop()
+			}
+			if due <= 0 {
+				mu.Unlock()
+				flush()
+				return
+			}
+			timer = time.AfterFunc(due, flush)
+			mu.Unlock()
+		}
+	}
+}
+
 // compose renders the room's projection as the harness's context: the
-// transcript, oldest first, and what triggered the turn.
+// transcript, oldest first, what triggered the turn, and what the agent
+// has to work with.
 func (r *Runner) compose(rm *room, triggers []message) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s, an agent in the room %s. The room's transcript, oldest first:\n\n", r.decl.Identity, rm.path)
@@ -575,8 +707,39 @@ func (r *Runner) compose(rm *room, triggers []message) string {
 			fmt.Fprintf(&b, "You were triggered by: %s\n", t.Data.Text)
 		}
 	}
-	b.WriteString("Reply with the message text only.\n")
+	b.WriteString(r.means())
+	b.WriteString("Reply with the message text only: your final message is posted in the room as your turn.\n")
 	return b.String()
+}
+
+// means says what the agent has: its tools, its toolkits, the server's
+// tools — or that it has none, so it answers from the transcript rather
+// than writing out a call it cannot make.
+func (r *Runner) means() string {
+	var b strings.Builder
+	tools := r.decl.ToolNames()
+	switch {
+	case len(tools) > 0 && len(r.decl.Toolkits) > 0:
+		fmt.Fprintf(&b, "You may use these tools: %s; and the toolkits %s.\n", strings.Join(tools, ", "), toolkitNames(r.decl.Toolkits))
+	case len(tools) > 0:
+		fmt.Fprintf(&b, "You may use these tools: %s.\n", strings.Join(tools, ", "))
+	case len(r.decl.Toolkits) > 0:
+		fmt.Fprintf(&b, "You may use the toolkits %s; you have no shell and no file access.\n", toolkitNames(r.decl.Toolkits))
+	default:
+		b.WriteString("You have no tools in this turn: no shell, no file access, no web. Answer from the transcript, and when you cannot know something, say so rather than describing what you would run.\n")
+	}
+	if r.conn.URL != "" && r.exe != "" {
+		fmt.Fprintf(&b, "Through the %s server you may read this room or another (read_room, list_rooms) and ask the people you are answering a question (ask) when you need their answer before you can finish; a tool call that needs permission is asked of them the same way.\n", mcpserver.ServerName)
+	}
+	return b.String()
+}
+
+func toolkitNames(tks []declaration.Toolkit) string {
+	names := make([]string, 0, len(tks))
+	for _, t := range tks {
+		names = append(names, t.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // finish writes the turn, or logs why it could not, then composes the
@@ -589,7 +752,7 @@ func (r *Runner) finish(ctx context.Context, res *turnResult, events chan<- even
 		r.log.Error("harness failed: no turn", "room", rm.path, "err", res.err)
 		r.signal(rm, live.Failed, last.Path, failure(res.err))
 	} else {
-		r.post(ctx, rm, res.triggers, res.text)
+		r.post(ctx, rm, res.triggers, res.res)
 		r.signal(rm, live.Done, last.Path, "")
 	}
 	if len(rm.pending) > 0 && !rm.closed {
@@ -611,8 +774,9 @@ func failure(err error) string {
 
 // post writes the turn: its path derived from the triggers, the
 // create-if-absent guard the client's default, the triggers' op ids as
-// parents where they have one.
-func (r *Runner) post(ctx context.Context, rm *room, triggers []message, text string) {
+// parents where they have one, the steps the harness took and what the
+// turn cost on the message.
+func (r *Runner) post(ctx context.Context, rm *room, triggers []message, res harness.Result) {
 	ids := make([]string, len(triggers))
 	var parents, mentions []string
 	seen := map[string]bool{}
@@ -632,7 +796,7 @@ func (r *Runner) post(ctx context.Context, rm *room, triggers []message, text st
 	}
 	id := TurnID(r.decl.Identity, ids)
 	path := rm.path + "/messages/m-" + id
-	payload, _ := json.Marshal(types.MessageData{Text: text, Kind: types.KindTurn, Mentions: mentions, ReplyTo: replyTo})
+	payload, _ := json.Marshal(types.MessageData{Text: res.Text, Kind: types.KindTurn, Mentions: mentions, ReplyTo: replyTo, Steps: res.Steps, Usage: res.Usage})
 	opts := []client.ApplyOpt{client.WithOpID(id)}
 	if len(parents) > 0 {
 		opts = append(opts, client.WithParents(parents...))

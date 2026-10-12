@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -84,6 +85,18 @@ type Harness struct {
 	Template *Template `json:"template,omitempty"`
 	// Deadline bounds one turn; the runner's default when zero.
 	Deadline Duration `json:"deadline,omitempty"`
+	// Tools are the harness's own tools the agent may use, by the
+	// harness's names (Bash, Read, Edit, WebFetch…), each optionally with
+	// a rule in the harness's syntax that says which calls run without
+	// asking: "Bash(git *)" grants the shell and pre-approves git; a bare
+	// "Bash" grants and pre-approves every command. A call the rule does
+	// not cover is asked of the people in the room. None by default: an
+	// agent with no tools answers from the transcript and says so.
+	Tools []string `json:"tools,omitempty"`
+	// Workdir is the directory the harness runs in, for an agent whose
+	// tools work on files: an absolute path that exists. A fresh temporary
+	// directory per turn when empty.
+	Workdir string `json:"workdir,omitempty"`
 }
 
 // Template is an invocation template as the definition file writes it.
@@ -92,6 +105,10 @@ type Template struct {
 	Command string            `json:"command"`
 	Args    []string          `json:"args"`
 	Env     map[string]string `json:"env,omitempty"`
+	// Output is how the harness's standard output is read: "text" (the
+	// whole of it is the turn; the default) or "claude-stream" (Claude
+	// Code's event stream, one JSON object per line).
+	Output string `json:"output,omitempty"`
 }
 
 // Toolkit is one MCP server the harness may call.
@@ -167,6 +184,40 @@ func (t Trigger) Describe() string {
 		return fmt.Sprintf("schedule %s → %s", t.Schedule, t.Room)
 	}
 	return t.Kind
+}
+
+// ToolName is the tool a tools entry grants: the name before the rule's
+// parenthesis — "Bash" for "Bash(git *)" — or "" when the entry is not a
+// name at all.
+func ToolName(entry string) string {
+	name, _, _ := strings.Cut(strings.TrimSpace(entry), "(")
+	name = strings.TrimSpace(name)
+	for _, r := range name {
+		if !isToolRune(r) {
+			return ""
+		}
+	}
+	return name
+}
+
+// isToolRune says whether a rune may be part of a tool's name: a letter, a
+// digit or an underscore.
+func isToolRune(r rune) bool {
+	return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_'
+}
+
+// ToolNames lists the tools the harness has, each once, in order.
+func (d Declaration) ToolNames() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range d.Harness.Tools {
+		n := ToolName(t)
+		if n != "" && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // HarnessName is the harness as the announcement names it: the preset,
@@ -264,8 +315,28 @@ func (d *Declaration) validate() error {
 	if d.Harness.Template != nil && d.Harness.Template.Command == "" {
 		return errors.New("harness.template.command: required")
 	}
+	if d.Harness.Template != nil {
+		switch d.Harness.Template.Output {
+		case "", "text", "claude-stream":
+		default:
+			return fmt.Errorf("harness.template.output: %q is not text or claude-stream", d.Harness.Template.Output)
+		}
+	}
 	if d.Harness.Deadline == 0 {
 		d.Harness.Deadline = DefaultDeadline
+	}
+	for i, tool := range d.Harness.Tools {
+		if ToolName(tool) == "" {
+			return fmt.Errorf("harness.tools[%d]: %q is not a tool name, or a name with a rule like Bash(git *)", i, tool)
+		}
+	}
+	if d.Harness.Workdir != "" {
+		if !filepath.IsAbs(d.Harness.Workdir) {
+			return fmt.Errorf("harness.workdir: %q is not an absolute path", d.Harness.Workdir)
+		}
+		if st, err := os.Stat(d.Harness.Workdir); err != nil || !st.IsDir() {
+			return fmt.Errorf("harness.workdir: %q is not a directory that exists", d.Harness.Workdir)
+		}
 	}
 	for i, tk := range d.Toolkits {
 		if tk.Name == "" {

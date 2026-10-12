@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/impire-io/chronicle-agents/declaration"
+	"github.com/impire-io/chronicle-agents/mcpserver"
 	"github.com/impire-io/chronicle-agents/runner"
 	"github.com/impire-io/chronicle-agents/schedule"
 	"github.com/impire-io/chronicle-agents/types"
@@ -36,6 +37,7 @@ const usage = `chronicle-agents — humans and agents collaborating in rooms kep
   chronicle-agents schedule create NAME (--every D | --cron EXPR) [--ttl D] [--store ticks]
                                                                   register a schedule: the server writes a tick under schedule/NAME/ticks at every firing
   chronicle-agents run FILE                                       serve one agent from its definition file: one process, one declaration, one credential
+  chronicle-agents mcp                                            the MCP server the runner starts for one turn (configured by CHRONICLE_AGENTS_* in the environment); not for people
   chronicle-agents web [--listen 127.0.0.1:8080] [--ws URL] [--public-url URL] [--hosted [--account NAME]]
                                                                   serve the rooms interface: the embedded application, and how the browser reaches chronicle;
                                                                   --hosted signs the person in with GitHub, --account pins the account (otherwise they choose)
@@ -69,6 +71,8 @@ func Run(ctx context.Context, args []string, out io.Writer) error {
 		return scheduleCreate(ctx, args[2:], out)
 	case "run":
 		return run(ctx, args[1:], out)
+	case "mcp":
+		return mcpCmd(ctx)
 	case "web":
 		return webCmd(ctx, args[1:], out)
 	case "version":
@@ -351,12 +355,27 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer c.Close()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	r, err := runner.New(c, decl, log, runner.Version(Version))
+	url, nkey, creds, _, err := f.connection()
+	if err != nil {
+		return err
+	}
+	r, err := runner.New(c, decl, log, runner.Version(Version), runner.WithConnection(runner.Connection{URL: url, Nkey: nkey, Creds: creds}))
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "%s serving from %s (harness %s)\n", decl.Identity, file, harnessName(decl))
 	return r.Serve(ctx)
+}
+
+// mcpCmd serves the runner's MCP server for one turn, over standard input
+// and output, configured by the environment the runner wrote into the
+// harness's MCP configuration (the mcpserver package).
+func mcpCmd(ctx context.Context) error {
+	cfg, err := mcpserver.ConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	return mcpserver.Serve(ctx, cfg)
 }
 
 // webCmd serves the rooms interface (chronicle-agents-hq design 03): the
