@@ -31,6 +31,7 @@ func AgentDefinition() client.TypeDefinition {
     "description": {"type": "string"},
     "harness":     {"type": "string"},
     "triggers":    {"type": "array", "items": {"type": "string"}},
+    "tools":       {"type": "array", "items": {"type": "string"}},
     "version":     {"type": "string"}
   },
   "required": ["name"]
@@ -50,13 +51,17 @@ type AgentData struct {
 	Description string   `json:"description,omitempty"`
 	Harness     string   `json:"harness,omitempty"`
 	Triggers    []string `json:"triggers,omitempty"`
-	Version     string   `json:"version,omitempty"`
+	// Tools are what the agent can do, for the people who ask it: the
+	// harness's tools the declaration grants, as the file states them,
+	// and the toolkits by name.
+	Tools   []string `json:"tools,omitempty"`
+	Version string   `json:"version,omitempty"`
 }
 
 // Equal says whether two announcements state the same thing.
 func (a AgentData) Equal(b AgentData) bool {
 	return a.Name == b.Name && a.Description == b.Description && a.Harness == b.Harness &&
-		a.Version == b.Version && slices.Equal(a.Triggers, b.Triggers)
+		a.Version == b.Version && slices.Equal(a.Triggers, b.Triggers) && slices.Equal(a.Tools, b.Tools)
 }
 
 // AnnounceAgent writes what the runner serves: create-if-absent, then

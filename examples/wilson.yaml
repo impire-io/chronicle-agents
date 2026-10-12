@@ -26,14 +26,21 @@ triggers:
   #   room: room/ops
 
 harness:
-  preset: claude-code        # claude -p, headless; also: pi, hermes; or a template: {command, args, env}
+  preset: claude-code        # claude -p, headless; also: pi, hermes; or a template: {command, args, env, output}
   # model: claude-sonnet-5-5
   deadline: 3m
+  # tools: ["Bash(ls *)", "Read"]   # the harness's own tools wilson may use: a bare name runs without asking,
+  #                                 # a rule pre-approves only the calls it covers — any other call is asked of
+  #                                 # the people in the room, as a question they answer in the room.
+  #                                 # none: wilson answers from the transcript and says what it cannot know
+  # workdir: /srv/wilson            # where the harness runs, for tools that work on files (default: a fresh temp dir per turn)
 
 instructions: |
   You are wilson, an agent taking part in a chat room with people.
   Answer the message that mentions you, briefly and concretely, in one or
-  two sentences. If you cannot know, say so. Reply with the message text only.
+  two sentences. If you cannot know, say so. When you need the asker's
+  answer before you can finish, ask them (the ask tool). Reply with the
+  message text only.
 
 toolkits: []                 # MCP servers wilson may call, e.g.
   # - name: invoices

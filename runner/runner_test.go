@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/impire-io/chronicle-agents/declaration"
+	"github.com/impire-io/chronicle-agents/harness"
 	"github.com/impire-io/chronicle-agents/internal/chrontest"
 	"github.com/impire-io/chronicle-agents/types"
 	"github.com/impire-io/chronicle/client"
@@ -204,8 +205,8 @@ func TestTheSameTriggerIsAnsweredOnce(t *testing.T) {
 	ack := w.say("admin", "m-1", "@wilson?", "wilson")
 	rm := &room{store: "rooms", path: "room/r1", byOpID: map[string]*message{}}
 	trigger := message{OpID: ack.OpID, Path: "room/r1/messages/m-1", Author: "admin"}
-	r.post(w.ctx, rm, []message{trigger}, "first answer")
-	r.post(w.ctx, rm, []message{trigger}, "second answer, must not land")
+	r.post(w.ctx, rm, []message{trigger}, harness.Result{Text: "first answer"})
+	r.post(w.ctx, rm, []message{trigger}, harness.Result{Text: "second answer, must not land"})
 	turns := w.turns()
 	if len(turns) != 1 || turns[0].Data.Text != "first answer" {
 		t.Fatalf("turns = %+v, want exactly the first", turns)

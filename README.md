@@ -92,18 +92,34 @@ for the CLI and a self-hosted chronicle, and a test holds the two equal.
   (`chronicle-agents schedule create hourly --every 1h`; the server writes
   the ticks into the tick store, the runner keeps no clock) — the
   **harness** that thinks (`claude-code`, `pi`, `hermes`, or any command
-  reading the context on stdin), its instructions, its **toolkits** (MCP
-  servers), and a **budget**. A trigger that is not in a room names the
-  room its turn goes to. See [`examples/wilson.yaml`](examples/wilson.yaml).
-  On start the runner **announces** its agent in the workspace as
-  `agent/<name>` — name, description, harness, what it reacts to, the
-  runner's version — so the page and anyone reading the store know which
-  agents exist; it updates the announcement when the file changes.
+  reading the context on stdin), the harness's own **tools** it may use —
+  by name, each optionally with a rule that says which calls run without
+  asking; a call the rule does not cover is asked of the people in the
+  room — and the directory it works in, its instructions, its
+  **toolkits** (MCP servers), and a **budget**. A trigger that is not in a
+  room names the room its turn goes to. See
+  [`examples/wilson.yaml`](examples/wilson.yaml). On start the runner
+  **announces** its agent in the workspace as `agent/<name>` — name,
+  description, harness, what it reacts to, what it may use, the runner's
+  version — so the page and anyone reading the store know which agents
+  exist; it updates the announcement when the file changes.
+- **A turn carries what it took.** With Claude Code the runner reads the
+  harness's event stream as it runs: every tool call lands on the turn as
+  a **step** (the tool, a bounded summary of what it was asked and what
+  came back, whether it succeeded), with what the turn cost; and while the
+  turn runs the page sees the text as it is written and each step as it
+  starts and comes back. An agent that needs an answer from the people it
+  is answering — its own question, or a permission its harness cannot
+  decide, such as a shell command outside its rules — writes a
+  **question** in the room, with the choices it offers, and waits for the
+  reply; the answer is the person's next message to it, in the room, on
+  the record.
 - **While an agent works, the page sees it.** The runner says what a
   trigger became on `CHRON.LIVE.<store>.room.<id>` — picked up, thinking
-  every few seconds, done; refused with the rule in plain words (*2 turns
-  in a minute*, *a chain 4 deep*, *a mention from another agent*); failed
-  with why — and that it is online on `CHRON.LIVE.<store>.agent.<name>`,
+  every few seconds, writing with the text so far, a step as it starts
+  and comes back, waiting on a question, done; refused with the rule in
+  plain words (*2 turns in a minute*, *a chain 4 deep*, *a mention from
+  another agent*); failed with why — and that it is online on `CHRON.LIVE.<store>.agent.<name>`,
   every ten seconds. These are chronicle's ephemeral namespace: kept by
   nothing, never a trigger, and a page that missed one still reads the
   turn from the record. Every workspace starts with the room **General**,
