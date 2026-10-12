@@ -61,11 +61,18 @@ func Announce(ctx context.Context, c *client.Client, store, version string) erro
 	if _, err := c.DefineType(ctx, store, Solution, SolutionDefinition()); err != nil {
 		return fmt.Errorf("define %s: %w", Solution, err)
 	}
+	return AnnounceInstance(ctx, c, store, version)
+}
+
+// AnnounceInstance writes the announcement into a store whose solution
+// type is already defined — the workspace declaration defines it with the
+// rest (decision 0008). Create-if-absent: an existing announcement stands.
+func AnnounceInstance(ctx context.Context, c *client.Client, store, version string) error {
 	payload, _ := json.Marshal(SolutionData{
 		Name:        SolutionName,
-		Description: "humans and agents collaborating in rooms kept on chronicle",
+		Description: SolutionDescription,
 		Version:     version,
-		Home:        "https://github.com/impire-io/chronicle-agents",
+		Home:        SolutionHome,
 	})
 	_, err := c.Create(ctx, store, SolutionPath, "create", payload)
 	if err != nil && !errors.Is(err, client.ErrInstanceExists) {

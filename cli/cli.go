@@ -165,9 +165,11 @@ func parseWithPositional(fs *flag.FlagSet, args []string, what string) (string, 
 	return pos, nil
 }
 
-// storeInit makes the workspace: the rooms store with its two types, and
-// the tick store that allows schedules. Both are created when missing and
-// left alone when present; the types are declared again (a revision).
+// storeInit makes the workspace from its declaration (decision 0008 —
+// the same value the hosted interface publishes as /install.json): the
+// rooms store with its types, the announcement, and the tick store that
+// allows schedules. Stores are created when missing and left alone when
+// present; the types are declared again (a revision).
 func storeInit(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("store init", flag.ContinueOnError)
 	fs.SetOutput(out)
@@ -187,34 +189,44 @@ func storeInit(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer c.Close()
-	if created, err := ensureStore(ctx, c, *store, "rooms where humans and agents collaborate (chronicle-agents)"); err != nil {
-		return err
-	} else if created {
-		fmt.Fprintf(out, "store %s created\n", *store)
-	}
-	if err := types.Declare(ctx, c, *store); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "types %s and %s declared in store %s (as %s)\n", types.Room, types.Message, *store, c.Author())
-	// The workspace announces itself (chronicle-hq decision 0051): the
-	// console lists it and links to its interface once web has run.
-	if err := types.Announce(ctx, c, *store, Version); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "%s announced as %s in store %s\n", types.SolutionName, types.SolutionPath, *store)
-	if *iface != "" {
-		if err := types.Locate(ctx, c, *store, *iface); err != nil {
+	w := types.Declaration(*store, *ticks)
+	for _, s := range w.Stores {
+		var opts []client.StoreOpt
+		if s.Schedules {
+			opts = append(opts, client.WithSchedules())
+		}
+		created, err := ensureStore(ctx, c, s.Name, s.Description, opts...)
+		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "the rooms interface is at %s (recorded on the announcement)\n", *iface)
-	}
-	if *ticks != "" {
-		if created, err := ensureStore(ctx, c, *ticks, "the tick store: schedules and their ticks (chronicle-agents)", client.WithSchedules()); err != nil {
+		switch {
+		case created && s.Schedules:
+			fmt.Fprintf(out, "store %s created (schedules allowed)\n", s.Name)
+		case created:
+			fmt.Fprintf(out, "store %s created\n", s.Name)
+		case len(s.Types) == 0:
+			fmt.Fprintf(out, "store %s present\n", s.Name)
+		}
+		if err := s.DefineTypes(ctx, c); err != nil {
 			return err
-		} else if created {
-			fmt.Fprintf(out, "store %s created (schedules allowed)\n", *ticks)
-		} else {
-			fmt.Fprintf(out, "store %s present\n", *ticks)
+		}
+		if names := w.WorkspaceTypes(s.Name); len(names) > 0 {
+			fmt.Fprintf(out, "types %s and %s declared in store %s (as %s)\n", names[1], names[0], s.Name, c.Author())
+		}
+		if s.Name != w.Announce.Store {
+			continue
+		}
+		// The workspace announces itself (chronicle-hq decision 0051): the
+		// console lists it and links to its interface.
+		if err := types.AnnounceInstance(ctx, c, s.Name, Version); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s announced as %s in store %s\n", types.SolutionName, w.Announce.Path, s.Name)
+		if *iface != "" {
+			if err := types.Locate(ctx, c, s.Name, *iface); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "the rooms interface is at %s (recorded on the announcement)\n", *iface)
 		}
 	}
 	return nil
@@ -361,7 +373,13 @@ func webCmd(ctx context.Context, args []string, out io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg := web.Config{Store: *store, TickStore: *ticks}
+	// The address the interface is reachable at: on the announcement when
+	// web serves from a context, and on /install.json always.
+	addr := *publicURL
+	if addr == "" {
+		addr = "http://" + *listen
+	}
+	cfg := web.Config{Store: *store, TickStore: *ticks, Version: Version, PublicURL: addr}
 	if *hosted {
 		cfg.Mode, cfg.Profile, cfg.Account = "hosted", *profile, *account
 		if *account == "" {
@@ -413,10 +431,6 @@ func webCmd(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 	// The announcement learns where the interface is.
-	addr := *publicURL
-	if addr == "" {
-		addr = "http://" + *listen
-	}
 	if c, err := f.resolve(""); err == nil {
 		if err := types.Locate(ctx, c, *store, addr); err != nil {
 			fmt.Fprintf(out, "note: the announcement was not updated: %v\n", err)
