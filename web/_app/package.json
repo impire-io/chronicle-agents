@@ -11,7 +11,7 @@
     "check": "npm run test && npm run build"
   },
   "dependencies": {
-    "@impire-io/chronicle": "0.2.0",
+    "@impire-io/chronicle": "0.3.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

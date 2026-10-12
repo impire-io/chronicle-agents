@@ -32,6 +32,32 @@ func TestHandlerServesTheConfigurationAndTheApplication(t *testing.T) {
 		t.Error("the configuration is cached")
 	}
 
+	// Hosted, the configuration carries the profile and, pinned, the account; unpinned, no account at all.
+	for _, tc := range []struct {
+		cfg  Config
+		want string
+	}{
+		{Config{Mode: "hosted", Profile: "https://chronicle.example.test/p.json", Store: "rooms"}, `{"mode":"hosted","profile":"https://chronicle.example.test/p.json","store":"rooms"}`},
+		{Config{Mode: "hosted", Profile: "https://chronicle.example.test/p.json", Account: "acme", Store: "rooms"}, `{"mode":"hosted","profile":"https://chronicle.example.test/p.json","account":"acme","store":"rooms"}`},
+	} {
+		hh, err := Handler(tc.cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hs := httptest.NewServer(hh)
+		res, err := http.Get(hs.URL + "/config.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := make([]byte, 1024)
+		n, _ := res.Body.Read(body)
+		_ = res.Body.Close()
+		hs.Close()
+		if got := strings.TrimSpace(string(body[:n])); got != tc.want {
+			t.Errorf("hosted config = %s, want %s", got, tc.want)
+		}
+	}
+
 	// The application is served at / and at any address it owns.
 	for _, p := range []string{"/", "/rooms/close-w41"} {
 		res, err := http.Get(srv.URL + p)

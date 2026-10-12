@@ -87,6 +87,46 @@ button.danger {
   border-color: var(--destructive);
   color: white;
 }
+button.link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--primary);
+  text-decoration: underline;
+}
+a.button {
+  display: inline-block;
+  border: 1px solid var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  text-decoration: none;
+}
+.accounts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.accounts button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: transparent;
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+}
+.accounts button:hover {
+  background: var(--accent);
+}
+.accounts .meta {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible {

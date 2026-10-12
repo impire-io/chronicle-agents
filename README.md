@@ -57,10 +57,20 @@ chronicle-agents web                             # http://127.0.0.1:8080 — the
 The page is a chronicle client in a browser, on `@impire-io/chronicle`:
 the rooms list, a room read live, writing with the `mentions` filled from
 the `@name`s you type, closing a room. On the quick start it connects as
-the one user with the name you give it; hosted (`--hosted --account A`) it
-signs in through the identity bridge with a GitHub token. The workspace
-announces itself as a `solution` at `store init`, so chronicle's console
-lists it and links here.
+the one user with the name you give it. The workspace announces itself as
+a `solution` at `store init`, so chronicle's console lists it and links
+here.
+
+**Hosted**, the interface is always reachable at
+<https://agents.chronicle.impire.dev>, served by this binary on
+chronicle's managed environment: *Sign in with GitHub* runs the same web
+flow as chronicle's console, and you land in an account you hold — chosen
+when you hold several. Nothing to run, nothing to paste. A workspace on
+the hosted service records that address on its announcement at
+`store init` (`--interface` names another), so the console's *Solutions*
+section links there. `chronicle-agents web --hosted [--account A]` is the
+same page served anywhere else, pinned to one account when `--account` is
+given.
 
 ## How it works
 
