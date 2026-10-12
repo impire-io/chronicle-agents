@@ -1,0 +1,75 @@
+version: 2
+
+project_name: chronicle-agents
+
+# One binary, chronicle-agents — the runner, the CLI and the rooms interface
+# it embeds — for linux and darwin, amd64 and arm64. The embedded interface
+# is web/dist as committed on main; the release flow does not rebuild it
+# (chronicle-agents-hq decision 0006 point 4: the gate has proven it fresh).
+#
+# {{.Version}} is the tag with the v stripped — bare semver. Dev builds
+# stay 0.0.0-dev; only this flow stamps.
+builds:
+  - id: chronicle-agents
+    main: ./cmd/chronicle-agents
+    binary: chronicle-agents
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/impire-io/chronicle-agents/cli.Version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: chronicle-agents
+    ids: [chronicle-agents]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - README.md
+      - LICENSE
+
+# The formula in Impire's public tap, beside chronicle's (decision 0006
+# point 2). The token is the repository's HOMEBREW_TAP_TOKEN secret.
+brews:
+  - name: chronicle-agents
+    ids: [chronicle-agents]
+    repository:
+      owner: impire-io
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/impire-io/chronicle-agents
+    description: "Humans and autonomous agents collaborating in rooms kept on chronicle"
+    skip_upload: false
+    commit_msg_template: "brew: chronicle-agents {{ .Tag }}"
+    commit_author:
+      name: chronicle-agents-release
+      email: noreply@impire.io
+    install: |
+      bin.install "chronicle-agents"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/chronicle-agents version")
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs"
+      - "^test"
+      - "^chore"
+
+release:
+  github:
+    owner: impire-io
+    name: chronicle-agents
+  draft: false
+  prerelease: auto

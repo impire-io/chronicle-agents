@@ -22,7 +22,9 @@ Against a chronicle you already have — the quick start (`chronicle up`) is
 enough — with the `chronicle` CLI's context selected or named:
 
 ```sh
+brew install impire-io/tap/chronicle-agents     # or, with a Go toolchain:
 go install github.com/impire-io/chronicle-agents/cmd/chronicle-agents@latest
+chronicle-agents version                         # the release you have; 0.0.0-dev is a source build
 
 chronicle-agents store init                      # the workspace: the rooms store with its types, and the tick store
 chronicle service-account create wilson --role writer
