@@ -25,6 +25,7 @@ import (
 
 	"github.com/impire-io/chronicle-agents/declaration"
 	"github.com/impire-io/chronicle-agents/harness"
+	"github.com/impire-io/chronicle-agents/live"
 	"github.com/impire-io/chronicle-agents/types"
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -34,13 +35,24 @@ import (
 
 // Runner serves one declaration.
 type Runner struct {
-	c    *client.Client
-	decl declaration.Declaration
-	tpl  harness.Template
-	log  *slog.Logger
+	c       *client.Client
+	decl    declaration.Declaration
+	tpl     harness.Template
+	log     *slog.Logger
+	version string
+	since   time.Time
 
 	rooms   map[string]*room  // store + "/" + room path
 	members map[string]string // principal -> kind, from the registry
+}
+
+// Option configures a runner.
+type Option func(*Runner)
+
+// Version names the runner's version, announced beside the agent and
+// said in its presence (decision 0009); a source build says 0.0.0-dev.
+func Version(v string) Option {
+	return func(r *Runner) { r.version = v }
 }
 
 // room is the runner's projection of one room: what the record says
@@ -83,7 +95,7 @@ func (m message) identity() string {
 
 // New builds a runner for a declaration over a connected client whose
 // author is the declaration's identity.
-func New(c *client.Client, decl declaration.Declaration, log *slog.Logger) (*Runner, error) {
+func New(c *client.Client, decl declaration.Declaration, log *slog.Logger, opts ...Option) (*Runner, error) {
 	if c.Author() != decl.Identity {
 		return nil, fmt.Errorf("the credential acts as %q but the declaration is %q: an agent writes under its own identity", c.Author(), decl.Identity)
 	}
@@ -103,14 +115,81 @@ func New(c *client.Client, decl declaration.Declaration, log *slog.Logger) (*Run
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Runner{
+	r := &Runner{
 		c:       c,
 		decl:    decl,
 		tpl:     tpl,
 		log:     log.With("agent", decl.Identity),
+		version: "0.0.0-dev",
 		rooms:   map[string]*room{},
 		members: map[string]string{},
-	}, nil
+	}
+	for _, o := range opts {
+		o(r)
+	}
+	return r, nil
+}
+
+// announcement is what the runner says it serves (design 01 § the
+// workspace): the declaration's facets as the record keeps them.
+func (r *Runner) announcement() types.AgentData {
+	triggers := make([]string, 0, len(r.decl.Triggers))
+	for _, t := range r.decl.Triggers {
+		triggers = append(triggers, t.Describe())
+	}
+	return types.AgentData{
+		Name:        r.decl.Identity,
+		Description: r.decl.Description,
+		Harness:     r.decl.HarnessName(),
+		Triggers:    triggers,
+		Version:     r.version,
+	}
+}
+
+// announce writes the announcement in every rooms store the agent
+// serves; a store that is not there yet is a warning, not a stop — the
+// record is the workspace's to make.
+func (r *Runner) announce(ctx context.Context) {
+	data := r.announcement()
+	for _, store := range r.decl.RoomStores() {
+		if err := types.AnnounceAgent(ctx, r.c, store, data); err != nil {
+			r.log.Warn("not announced", "store", store, "err", err)
+			continue
+		}
+		r.log.Info("announced", "store", store, "path", types.AgentPath(data.Name))
+	}
+}
+
+// presence says the agent is online, now and every PresenceEvery, in
+// every rooms store it serves, until the context ends.
+func (r *Runner) presence(ctx context.Context) {
+	say := func() {
+		p := live.Presence{Agent: r.decl.Identity, State: live.Online, Since: r.since, Version: r.version}
+		for _, store := range r.decl.RoomStores() {
+			if err := live.Publish(r.c.Conn(), live.AgentSubject(store, r.decl.Identity), p); err != nil {
+				r.log.Debug("presence not said", "store", store, "err", err)
+			}
+		}
+	}
+	say()
+	tick := time.NewTicker(live.PresenceEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			say()
+		}
+	}
+}
+
+// signal says one moment of a turn in the room's live subject.
+func (r *Runner) signal(rm *room, state live.State, trigger, reason string) {
+	sig := live.Signal{Agent: r.decl.Identity, State: state, Trigger: trigger, Reason: reason, At: time.Now()}
+	if err := live.Publish(r.c.Conn(), live.RoomSubject(rm.store, live.RoomID(rm.path)), sig); err != nil {
+		r.log.Debug("signal not said", "room", rm.path, "state", state, "err", err)
+	}
 }
 
 // event is what the serving loop consumes: an operation from a store's
@@ -147,6 +226,9 @@ func (r *Runner) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
+	r.since = time.Now()
+	r.announce(ctx)
+	go r.presence(ctx)
 	events := make(chan event, 64)
 	for _, store := range stores {
 		st, err := js.Stream(ctx, contract.StreamName(store))
@@ -289,8 +371,9 @@ func (r *Runner) react(ctx context.Context, rm *room, trigger message, events ch
 		r.log.Info("dropped: closed room", "room", rm.path, "trigger", trigger.identity())
 		return
 	}
-	if rule := r.admit(ctx, rm, trigger); rule != "" {
+	if rule, reason := r.admit(ctx, rm, trigger); rule != "" {
 		r.log.Warn("refused", "room", rm.path, "trigger", trigger.identity(), "author", trigger.Author, "rule", rule)
+		r.signal(rm, live.Refused, trigger.Path, reason)
 		return
 	}
 	if rm.thinking {
@@ -362,11 +445,12 @@ func (r *Runner) match(store, path string, op contract.Op, msg *message) *declar
 }
 
 // admit applies the budget from the record alone and names the rule
-// that refuses, or "" to admit.
-func (r *Runner) admit(ctx context.Context, rm *room, trigger message) string {
+// that refuses — for the log, and in the person's words for the live
+// signal (decision 0009) — or "" to admit.
+func (r *Runner) admit(ctx context.Context, rm *room, trigger message) (rule, reason string) {
 	// Agent to agent: the author is a service account in the registry.
 	if trigger.Author != "" && !r.decl.Budget.ReplyToAgents && r.kindOf(ctx, trigger.Author) == "service" {
-		return "agent-to-agent: the author is a service account and reply_to_agents is off"
+		return "agent-to-agent: the author is a service account and reply_to_agents is off", "a mention from another agent"
 	}
 	// The window floor: the agent's own turns in this room within the window.
 	since := time.Now().Add(-r.decl.Budget.Window.Std())
@@ -377,7 +461,8 @@ func (r *Runner) admit(ctx context.Context, rm *room, trigger message) string {
 		}
 	}
 	if own >= r.decl.Budget.Turns {
-		return fmt.Sprintf("window floor: %d turns in the last %s", own, r.decl.Budget.Window.Std())
+		return fmt.Sprintf("window floor: %d turns in the last %s", own, r.decl.Budget.Window.Std()),
+			fmt.Sprintf("%d turns in %s", own, spoken(r.decl.Budget.Window.Std()))
 	}
 	// The depth bound: the chain of turns this trigger extends.
 	depth := 0
@@ -387,9 +472,28 @@ func (r *Runner) admit(ctx context.Context, rm *room, trigger message) string {
 		cur = rm.byOpID[cur.Parents[0]]
 	}
 	if depth >= r.decl.Budget.Depth {
-		return fmt.Sprintf("depth bound: the trigger chain is %d turns deep", depth)
+		return fmt.Sprintf("depth bound: the trigger chain is %d turns deep", depth), fmt.Sprintf("a chain %d deep", depth)
 	}
-	return ""
+	return "", ""
+}
+
+// spoken is a duration as a person says it: a minute, 30 seconds, 2
+// minutes, an hour.
+func spoken(d time.Duration) string {
+	switch {
+	case d == time.Minute:
+		return "a minute"
+	case d == time.Hour:
+		return "an hour"
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%d hours", int(d/time.Hour))
+	case d%time.Minute == 0:
+		return fmt.Sprintf("%d minutes", int(d/time.Minute))
+	case d == time.Second:
+		return "a second"
+	default:
+		return fmt.Sprintf("%d seconds", int(d/time.Second))
+	}
 }
 
 func (r *Runner) kindOf(ctx context.Context, principal string) string {
@@ -424,10 +528,26 @@ func (r *Runner) start(ctx context.Context, rm *room, triggers []message, events
 	for _, tk := range r.decl.Toolkits {
 		input.Toolkits = append(input.Toolkits, harness.Toolkit{Name: tk.Name, Command: tk.Command, Args: tk.Args, Env: tk.Env})
 	}
-	r.log.Info("turn", "room", rm.path, "triggers", len(triggers), "trigger", triggers[len(triggers)-1].identity())
+	last := triggers[len(triggers)-1]
+	r.log.Info("turn", "room", rm.path, "triggers", len(triggers), "trigger", last.identity())
+	r.signal(rm, live.PickedUp, last.Path, "")
 	go func() {
 		started := time.Now()
+		thinking, stop := context.WithCancel(ctx)
+		go func() {
+			tick := time.NewTicker(live.ThinkingEvery)
+			defer tick.Stop()
+			for {
+				select {
+				case <-thinking.Done():
+					return
+				case <-tick.C:
+					r.signal(rm, live.Thinking, last.Path, "")
+				}
+			}
+		}()
 		text, err := harness.Invoke(ctx, r.tpl, input)
+		stop()
 		if err == nil {
 			r.log.Info("harness answered", "room", rm.path, "took", time.Since(started).Round(time.Millisecond))
 		}
@@ -464,15 +584,28 @@ func (r *Runner) compose(rm *room, triggers []message) string {
 func (r *Runner) finish(ctx context.Context, res *turnResult, events chan<- event) {
 	rm := res.room
 	rm.thinking = false
+	last := res.triggers[len(res.triggers)-1]
 	if res.err != nil {
 		r.log.Error("harness failed: no turn", "room", rm.path, "err", res.err)
+		r.signal(rm, live.Failed, last.Path, failure(res.err))
 	} else {
 		r.post(ctx, rm, res.triggers, res.text)
+		r.signal(rm, live.Done, last.Path, "")
 	}
 	if len(rm.pending) > 0 && !rm.closed {
 		next := rm.pending
 		rm.pending = nil
 		r.start(ctx, rm, next, events)
+	}
+}
+
+// failure is why a harness did not answer, in the person's words.
+func failure(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "the harness did not answer before its deadline"
+	default:
+		return "the harness did not answer: " + err.Error()
 	}
 }
 

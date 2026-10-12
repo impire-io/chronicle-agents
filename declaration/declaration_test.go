@@ -15,6 +15,84 @@ harness:
 instructions: Answer briefly.
 `
 
+func TestDescriptionDescribeHarnessNameAndRoomStores(t *testing.T) {
+	d, err := Parse([]byte(`
+identity: wilson
+description: answers what is asked of it, briefly
+triggers:
+  - kind: mention
+  - kind: mention
+    store: finance
+    under: room/close-w41
+  - kind: op
+    under: room/close-w41
+    operation: close
+  - kind: op
+    under: invoice/inv-1
+    room: room/close-w41
+    room_store: finance
+  - kind: subject
+    subject: alerts.>
+    room: room/ops
+  - kind: schedule
+    schedule: schedule/hourly
+    room: room/ops
+harness:
+  preset: claude-code
+instructions: Answer briefly.
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Description != "answers what is asked of it, briefly" {
+		t.Errorf("description = %q", d.Description)
+	}
+	want := []string{
+		"mention in rooms",
+		"mention under room/close-w41 in finance",
+		"close on room/close-w41 in rooms",
+		"any operation on invoice/inv-1 in rooms → room/close-w41",
+		"alerts.> → room/ops",
+		"schedule schedule/hourly → room/ops",
+	}
+	for i, t2 := range d.Triggers {
+		if got := t2.Describe(); got != want[i] {
+			t.Errorf("triggers[%d] described as %q, want %q", i, got, want[i])
+		}
+	}
+	if d.HarnessName() != "claude-code" {
+		t.Errorf("harness = %q", d.HarnessName())
+	}
+	if got := strings.Join(d.RoomStores(), ","); got != "rooms,finance" {
+		t.Errorf("room stores = %q", got)
+	}
+	// The tick store is a trigger's store, never a rooms store; a file
+	// with no triggers still writes in the default store.
+	only, _ := Parse([]byte(`
+identity: wilson
+triggers:
+  - kind: schedule
+    schedule: schedule/hourly
+    room: room/ops
+harness:
+  preset: pi
+`))
+	if got := strings.Join(only.RoomStores(), ","); got != "rooms" {
+		t.Errorf("room stores for a schedule alone = %q", got)
+	}
+	if got := only.Stores(); len(got) != 2 || got[0] != "ticks" {
+		t.Errorf("stores = %v", got)
+	}
+	none, _ := Parse([]byte(`
+identity: wilson
+harness:
+  preset: pi
+`))
+	if got := none.RoomStores(); len(got) != 1 || got[0] != DefaultStore {
+		t.Errorf("room stores with no triggers = %v", got)
+	}
+}
+
 func TestParseFillsTheDefaults(t *testing.T) {
 	d, err := Parse([]byte(minimal))
 	if err != nil {

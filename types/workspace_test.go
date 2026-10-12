@@ -33,15 +33,16 @@ func TestManifestIsTheDeclarationInTheWiresShape(t *testing.T) {
 	if strings.Contains(s, `"Schema"`) || strings.Contains(s, `"Operations"`) {
 		t.Errorf("manifest carries the Go names, not the wire's:\n%s", s)
 	}
-	// The types come in definition order: message, room, solution.
-	if i, j, k := strings.Index(s, `"name":"message"`), strings.Index(s, `"name":"room"`), strings.Index(s, `"name":"solution"`); i >= j || j >= k {
-		t.Errorf("types out of order: message %d, room %d, solution %d", i, j, k)
+	// The types come in definition order: message, room, solution, agent.
+	i, j, k, l := strings.Index(s, `"name":"message"`), strings.Index(s, `"name":"room"`), strings.Index(s, `"name":"solution"`), strings.Index(s, `"name":"agent"`)
+	if i >= j || j >= k || k >= l {
+		t.Errorf("types out of order: message %d, room %d, solution %d, agent %d", i, j, k, l)
 	}
 	// No tick store: one store, nothing else changes.
 	if n := len(Declaration("rooms", "").Stores); n != 1 {
 		t.Errorf("without ticks: %d stores", n)
 	}
-	if got := Declaration("rooms", "ticks").WorkspaceTypes("rooms"); strings.Join(got, ",") != "message,room" {
+	if got := Declaration("rooms", "ticks").WorkspaceTypes("rooms"); strings.Join(got, ",") != "message,room,agent" {
 		t.Errorf("workspace types = %v", got)
 	}
 }

@@ -1,6 +1,7 @@
 // Package declaration is the definition file: what an agent is, in the
-// six facets chronicle-agents-hq design 02 states — an identity, its
-// triggers, a harness, its instructions, its toolkits, a budget. Loading a
+// facets chronicle-agents-hq design 02 states — an identity, one line of
+// what it is for, its triggers, a harness, its instructions, its
+// toolkits, a budget. Loading a
 // file validates it and refuses, with the field named, what the runner
 // cannot serve (decisions 0003 and 0004).
 package declaration
@@ -29,6 +30,10 @@ type Declaration struct {
 	// Identity is the agent's name: the chronicle service account it acts
 	// as, the author on every turn, and the @name a mention addresses.
 	Identity string `json:"identity"`
+	// Description is one line of what the agent is for, shown wherever
+	// its name is offered (decision 0009). Optional: an agent without one
+	// is offered by name alone.
+	Description string `json:"description,omitempty"`
 	// Triggers is what the agent reacts to. Empty is legal: the agent is
 	// served and does nothing.
 	Triggers []Trigger `json:"triggers"`
@@ -131,6 +136,81 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // Std returns the duration as time.Duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
+
+// Describe is the trigger as one line, as the file states it — what the
+// runner announces beside the agent's name (decision 0009): "mention in
+// rooms", "close on room/close-w41 in rooms", "alerts.> → room/ops",
+// "schedule schedule/hourly → room/ops".
+func (t Trigger) Describe() string {
+	switch t.Kind {
+	case KindMention:
+		if t.Under != "" {
+			return fmt.Sprintf("mention under %s in %s", t.Under, t.Store)
+		}
+		return "mention in " + t.Store
+	case KindOp:
+		op := t.Operation
+		if op == "" {
+			op = "any operation"
+		}
+		where := t.Store
+		if t.Under != "" {
+			where = t.Under + " in " + t.Store
+		}
+		if t.Room != "" {
+			return fmt.Sprintf("%s on %s → %s", op, where, t.Room)
+		}
+		return fmt.Sprintf("%s on %s", op, where)
+	case KindSubject:
+		return fmt.Sprintf("%s → %s", t.Subject, t.Room)
+	case KindSchedule:
+		return fmt.Sprintf("schedule %s → %s", t.Schedule, t.Room)
+	}
+	return t.Kind
+}
+
+// HarnessName is the harness as the announcement names it: the preset,
+// or the template's command.
+func (d Declaration) HarnessName() string {
+	if d.Harness.Preset != "" {
+		return d.Harness.Preset
+	}
+	if d.Harness.Template != nil {
+		return d.Harness.Template.Command
+	}
+	return ""
+}
+
+// RoomStores names the stores the agent writes turns in — the rooms
+// stores: a mention's or an op's store, and the room store a subject, a
+// schedule or an op outside the rooms names — never the tick store. The
+// default rooms store when the file names none.
+func (d Declaration) RoomStores() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, t := range d.Triggers {
+		switch t.Kind {
+		case KindMention, KindOp:
+			if t.Room != "" {
+				add(t.RoomStore)
+			} else {
+				add(t.Store)
+			}
+		case KindSubject, KindSchedule:
+			add(t.RoomStore)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, DefaultStore)
+	}
+	return out
+}
 
 // The defaults a file may leave unsaid.
 const (

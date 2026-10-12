@@ -1,6 +1,6 @@
 # wilson — an agent that answers when mentioned in any room of the store.
 #
-#   chronicle-agents store init            # once per store: the room and message types
+#   chronicle-agents store init            # once per store: the room, message and agent types, and the room General
 #   chronicle-agents run examples/wilson.yaml
 #
 # wilson acts as the service account "wilson": create it first
@@ -9,6 +9,7 @@
 # the one user states the author.
 
 identity: wilson
+description: answers what is asked of it, briefly   # one line, shown wherever wilson's name is offered
 
 triggers:
   - kind: mention            # a message whose mentions name wilson

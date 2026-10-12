@@ -96,7 +96,7 @@ func TestHandlerServesTheInstallManifest(t *testing.T) {
 	if m.Manifest != 1 || m.Solution.Name != "chronicle-agents" || m.Solution.Version != "1.2.3" || m.Solution.URL != "https://agents.example.test" {
 		t.Errorf("manifest = %+v", m)
 	}
-	if len(m.Stores) != 2 || m.Stores[0].Name != "rooms" || len(m.Stores[0].Types) != 3 || m.Stores[0].Types[0].Name != "message" || m.Stores[1].Name != "ticks" || !m.Stores[1].Schedules {
+	if len(m.Stores) != 2 || m.Stores[0].Name != "rooms" || len(m.Stores[0].Types) != 4 || m.Stores[0].Types[0].Name != "message" || m.Stores[0].Types[3].Name != "agent" || m.Stores[1].Name != "ticks" || !m.Stores[1].Schedules {
 		t.Errorf("stores = %+v", m.Stores)
 	}
 	if m.Announce.Store != "rooms" || m.Announce.Path != "solution/chronicle-agents" {
