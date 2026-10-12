@@ -11,7 +11,8 @@ import (
 
 // The workspace, declared once (chronicle-agents-hq decision 0008): the
 // stores in order, each store's types in order — message before room,
-// whose children name it — and the announcement. `store init` applies
+// whose children name it; solution; agent (decision 0009) — and the
+// announcement. `store init` applies
 // this value; the hosted interface publishes it as chronicle-hq design
 // 14's install manifest at /install.json, so chronicle's console enables
 // a workspace from the same declaration and the two cannot drift.
@@ -64,6 +65,7 @@ func Declaration(rooms, ticks string) Workspace {
 				{Name: Message, Definition: MessageDefinition()},
 				{Name: Room, Definition: RoomDefinition()},
 				{Name: Solution, Definition: SolutionDefinition()},
+				{Name: Agent, Definition: AgentDefinition()},
 			},
 		}},
 		Announce: AnnounceDecl{Store: rooms, Path: SolutionPath},

@@ -1,6 +1,7 @@
-// Package types holds the two chronicle types a workspace declares — room
-// and message — exactly as chronicle-agents-hq design 01 states them, and
-// declares them into a store through the chronicle client.
+// Package types holds the chronicle types a workspace declares — room,
+// message and agent, and the solution it announces itself with — exactly
+// as chronicle-agents-hq design 01 states them, and declares them into a
+// store through the chronicle client.
 package types
 
 import (
@@ -71,14 +72,17 @@ func MessageDefinition() client.TypeDefinition {
 	}
 }
 
-// Declare defines both types in the store — message first, so the room's
-// children map names a type that exists — and again to revise them.
+// Declare defines the workspace's types in the store — message first, so
+// the room's children map names a type that exists, then room, then
+// agent — and again to revise them.
 func Declare(ctx context.Context, c *client.Client, store string) error {
-	if _, err := c.DefineType(ctx, store, Message, MessageDefinition()); err != nil {
-		return fmt.Errorf("define %s: %w", Message, err)
-	}
-	if _, err := c.DefineType(ctx, store, Room, RoomDefinition()); err != nil {
-		return fmt.Errorf("define %s: %w", Room, err)
+	for _, t := range []struct {
+		name string
+		def  client.TypeDefinition
+	}{{Message, MessageDefinition()}, {Room, RoomDefinition()}, {Agent, AgentDefinition()}} {
+		if _, err := c.DefineType(ctx, store, t.name, t.def); err != nil {
+			return fmt.Errorf("define %s: %w", t.name, err)
+		}
 	}
 	return nil
 }

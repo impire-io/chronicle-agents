@@ -7,7 +7,7 @@ import (
 	"github.com/impire-io/chronicle-agents/internal/chrontest"
 )
 
-func TestDeclareDefinesBothTypesAndRevises(t *testing.T) {
+func TestDeclareDefinesTheTypesAndRevises(t *testing.T) {
 	l := chrontest.Up(t)
 	admin := l.Connect(t, "admin")
 	ctx := context.Background()
@@ -25,6 +25,9 @@ func TestDeclareDefinesBothTypesAndRevises(t *testing.T) {
 		t.Errorf("room children = %v", room.Children)
 	}
 	if _, err := admin.GetType(ctx, "rooms", Message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.GetType(ctx, "rooms", Agent); err != nil {
 		t.Fatal(err)
 	}
 	// Again: a revision, not an error.

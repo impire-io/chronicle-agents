@@ -23,14 +23,14 @@ func TestStoreInitAndScheduleCreate(t *testing.T) {
 	if err := Run(context.Background(), append([]string{"store", "init"}, conn...), &out); err != nil {
 		t.Fatalf("store init: %v\n%s", err, out.String())
 	}
-	if s := out.String(); !strings.Contains(s, "store rooms created") || !strings.Contains(s, "types room and message declared") || !strings.Contains(s, "store ticks created (schedules allowed)") {
+	if s := out.String(); !strings.Contains(s, "store rooms created") || !strings.Contains(s, "types message, room and agent declared") || !strings.Contains(s, "room general created in store rooms") || !strings.Contains(s, "store ticks created (schedules allowed)") {
 		t.Errorf("first init said:\n%s", s)
 	}
 	out.Reset()
 	if err := Run(context.Background(), append([]string{"store", "init", "--interface", "https://agents.example.test"}, conn...), &out); err != nil {
 		t.Fatalf("second store init: %v\n%s", err, out.String())
 	}
-	if s := out.String(); strings.Contains(s, "created") || !strings.Contains(s, "store ticks present") || !strings.Contains(s, "the rooms interface is at https://agents.example.test") {
+	if s := out.String(); strings.Contains(s, "created") || strings.Contains(s, "room general") || !strings.Contains(s, "store ticks present") || !strings.Contains(s, "the rooms interface is at https://agents.example.test") {
 		t.Errorf("second init said:\n%s", s)
 	}
 	// What store init made is what the manifest declares (decision 0008):

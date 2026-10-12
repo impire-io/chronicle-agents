@@ -211,10 +211,19 @@ func storeInit(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 		if names := w.WorkspaceTypes(s.Name); len(names) > 0 {
-			fmt.Fprintf(out, "types %s and %s declared in store %s (as %s)\n", names[1], names[0], s.Name, c.Author())
+			fmt.Fprintf(out, "types %s declared in store %s (as %s)\n", spokenList(names), s.Name, c.Author())
 		}
 		if s.Name != w.Announce.Store {
 			continue
+		}
+		// Every workspace starts with General (decision 0009): a place to
+		// type from the first second.
+		created, err = types.EnsureGeneral(ctx, c, s.Name)
+		if err != nil {
+			return err
+		}
+		if created {
+			fmt.Fprintf(out, "room %s created in store %s\n", types.GeneralID, s.Name)
 		}
 		// The workspace announces itself (chronicle-hq decision 0051): the
 		// console lists it and links to its interface.
@@ -342,7 +351,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer c.Close()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	r, err := runner.New(c, decl, log)
+	r, err := runner.New(c, decl, log, runner.Version(Version))
 	if err != nil {
 		return err
 	}
@@ -473,9 +482,16 @@ func (f *connFlags) connection() (url, nkey, creds, principal string, err error)
 	return url, nkey, creds, principal, nil
 }
 
-func harnessName(d declaration.Declaration) string {
-	if d.Harness.Preset != "" {
-		return d.Harness.Preset
+func harnessName(d declaration.Declaration) string { return d.HarnessName() }
+
+// spokenList joins names as a sentence does: "room, message and agent".
+func spokenList(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 	}
-	return d.Harness.Template.Command
 }

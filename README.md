@@ -26,7 +26,7 @@ brew install impire-io/tap/chronicle-agents     # or, with a Go toolchain:
 go install github.com/impire-io/chronicle-agents/cmd/chronicle-agents@latest
 chronicle-agents version                         # the release you have; 0.0.0-dev is a source build
 
-chronicle-agents store init                      # the workspace: the rooms store with its types, and the tick store
+chronicle-agents store init                      # the workspace: the rooms store with its types and the room General, and the tick store
 chronicle service-account create wilson --role writer
 
 chronicle instance create room/close-w41 --data '{"title":"Week 41 close","status":"open"}'
@@ -86,7 +86,8 @@ for the CLI and a self-hosted chronicle, and a test holds the two equal.
   created once, never changed. Reading a room is a listing of the store's
   state under the room's prefix; chronicle keeps it current.
 - **An agent is a declaration.** The definition file names an identity (a
-  chronicle service account), the **triggers** it reacts to — a mention, an
+  chronicle service account), one line of **description** (what it is for,
+  shown wherever its name is offered), the **triggers** it reacts to — a mention, an
   op under a path, a message on a NATS subject, a tick of a schedule
   (`chronicle-agents schedule create hourly --every 1h`; the server writes
   the ticks into the tick store, the runner keeps no clock) — the
@@ -94,6 +95,19 @@ for the CLI and a self-hosted chronicle, and a test holds the two equal.
   reading the context on stdin), its instructions, its **toolkits** (MCP
   servers), and a **budget**. A trigger that is not in a room names the
   room its turn goes to. See [`examples/wilson.yaml`](examples/wilson.yaml).
+  On start the runner **announces** its agent in the workspace as
+  `agent/<name>` — name, description, harness, what it reacts to, the
+  runner's version — so the page and anyone reading the store know which
+  agents exist; it updates the announcement when the file changes.
+- **While an agent works, the page sees it.** The runner says what a
+  trigger became on `CHRON.LIVE.<store>.room.<id>` — picked up, thinking
+  every few seconds, done; refused with the rule in plain words (*2 turns
+  in a minute*, *a chain 4 deep*, *a mention from another agent*); failed
+  with why — and that it is online on `CHRON.LIVE.<store>.agent.<name>`,
+  every ten seconds. These are chronicle's ephemeral namespace: kept by
+  nothing, never a trigger, and a page that missed one still reads the
+  turn from the record. Every workspace starts with the room **General**,
+  so there is somewhere to type from the first second.
 - **The runner reacts; it never loops.** It tails the store, and an
   operation the declaration selects becomes at most one **turn**: admitted
   or refused by the budget (so many turns per room per window, so deep a
@@ -108,10 +122,11 @@ for the CLI and a self-hosted chronicle, and a test holds the two equal.
 
 ## Status
 
-Specs 001 to 003: the types, the definition file, the runner with all four
-trigger kinds, the `claude-code`, `pi`, `hermes` and command harnesses, and
-the rooms interface served by the binary, tested against chronicle's own
-embedded quick start (chronicle v0.5.0). Placement is a later spec; the
+Specs 001 to 007: the types, the definition file, the runner with all four
+trigger kinds, the `claude-code`, `pi`, `hermes` and command harnesses,
+the rooms interface served by the binary and hosted, the install manifest,
+the agent's announcement and its live signals, tested against chronicle's
+own embedded quick start (chronicle v0.5.0). Placement is a later spec; the
 design is in
 [`chronicle-agents-hq`](https://github.com/impire-io/chronicle-agents-hq)
 `02-DESIGN`.
