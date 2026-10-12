@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/impire-io/chronicle-agents/schedule"
 	"github.com/impire-io/chronicle-agents/types"
 	"github.com/impire-io/chronicle-agents/web"
+	"github.com/impire-io/chronicle/bridge"
 	"github.com/impire-io/chronicle/cli"
 	"github.com/impire-io/chronicle/client"
 	"github.com/impire-io/chronicle/contract"
@@ -28,12 +30,15 @@ import (
 
 const usage = `chronicle-agents — humans and agents collaborating in rooms kept on chronicle
 
-  chronicle-agents store init [--store rooms] [--ticks ticks]      the workspace: the rooms store with the room and message types, and the tick store (again to revise)
+  chronicle-agents store init [--store rooms] [--ticks ticks] [--interface URL]
+                                                                  the workspace: the rooms store with the room and message types, and the tick store (again to revise);
+                                                                  --interface records where the rooms interface is (hosted: https://agents.<the site's host> by default)
   chronicle-agents schedule create NAME (--every D | --cron EXPR) [--ttl D] [--store ticks]
                                                                   register a schedule: the server writes a tick under schedule/NAME/ticks at every firing
   chronicle-agents run FILE                                       serve one agent from its definition file: one process, one declaration, one credential
-  chronicle-agents web [--listen 127.0.0.1:8080] [--ws URL] [--public-url URL] [--hosted --account NAME]
-                                                                  serve the rooms interface: the embedded application, and how the browser reaches chronicle
+  chronicle-agents web [--listen 127.0.0.1:8080] [--ws URL] [--public-url URL] [--hosted [--account NAME]]
+                                                                  serve the rooms interface: the embedded application, and how the browser reaches chronicle;
+                                                                  --hosted signs the person in with GitHub, --account pins the account (otherwise they choose)
 
 Connection flags, on every sentence (default: the chronicle context "local"):
   --context NAME     a saved chronicle context (chronicle context list)
@@ -107,6 +112,12 @@ func (f *connFlags) resolve(wantAuthor string) (*client.Client, error) {
 		if !ok {
 			return nil, fmt.Errorf("no context %q: pass --url with --nkey or --creds, or save one with chronicle context add", name)
 		}
+		if c.Bridge != "" && c.Nkey == "" && c.Creds == "" {
+			// A sign-in context: chronicle's own CLI dials it through the
+			// bridge with the login it keeps; chronicle-agents has no way
+			// to yet, so it says which credential to use instead.
+			return nil, fmt.Errorf("context %q signs in with GitHub, which chronicle-agents cannot speak through yet: use a service account's credential (chronicle service-account create NAME --role admin, then --creds FILE), or --nkey on your own NATS", name)
+		}
 		url, nkey, creds = c.URL, c.Nkey, c.Creds
 		if principal == "" {
 			principal = c.Principal
@@ -164,8 +175,12 @@ func storeInit(ctx context.Context, args []string, out io.Writer) error {
 	f.bind(fs)
 	store := fs.String("store", declaration.DefaultStore, "the rooms store")
 	ticks := fs.String("ticks", declaration.DefaultTickStore, "the tick store; empty for none")
+	iface := fs.String("interface", "", "where the rooms interface is, recorded on the announcement (default: https://agents.<the site's host> with a sign-in context; nothing otherwise, and web records it when it serves)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *iface == "" {
+		*iface = f.defaultInterface()
 	}
 	c, err := f.resolve("")
 	if err != nil {
@@ -187,6 +202,12 @@ func storeInit(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "%s announced as %s in store %s\n", types.SolutionName, types.SolutionPath, *store)
+	if *iface != "" {
+		if err := types.Locate(ctx, c, *store, *iface); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "the rooms interface is at %s (recorded on the announcement)\n", *iface)
+	}
 	if *ticks != "" {
 		if created, err := ensureStore(ctx, c, *ticks, "the tick store: schedules and their ticks (chronicle-agents)", client.WithSchedules()); err != nil {
 			return err
@@ -197,6 +218,45 @@ func storeInit(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// defaultInterface is where the rooms interface is when the flags name no
+// address: with a sign-in context, the hosted interface beside the site
+// the context's install profile came from (design 03 § serving it);
+// nothing with a credential, where web records the address when it serves.
+func (f *connFlags) defaultInterface() string {
+	if f.url != "" || f.nkey != "" || f.creds != "" {
+		return ""
+	}
+	name := f.context
+	if name == "" {
+		name = cli.LocalContextName
+	}
+	c, ok, err := cli.LoadContext(name)
+	if err != nil || !ok || c.Bridge == "" {
+		return ""
+	}
+	data, err := os.ReadFile(c.Bridge)
+	if err != nil {
+		return ""
+	}
+	p, err := bridge.DecodeProfile(data, c.Bridge)
+	if err != nil {
+		return ""
+	}
+	return InterfaceFor(p)
+}
+
+// InterfaceFor derives the hosted interface's address from an install
+// profile: `agents.` before the host of the site the profile names — the
+// site is where the web flow's code is traded — and nothing when the
+// profile names no site.
+func InterfaceFor(p bridge.Profile) string {
+	u, err := url.Parse(p.GithubTokenURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return "https://agents." + u.Host
 }
 
 // ensureStore creates a store unless it exists; it reports whether it did.
@@ -282,6 +342,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 // embedded application and /config.json — how the browser reaches
 // chronicle. Loopback by default: the local form hands the page the
 // context's credential in the clear, as the quick start itself does.
+// Hosted, the page signs the person in with GitHub (decision 0007); the
+// account is a pin the operator may set, and the deployment serves no
+// account's context, so it announces nothing — store init does.
 func webCmd(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	fs.SetOutput(out)
@@ -290,9 +353,9 @@ func webCmd(ctx context.Context, args []string, out io.Writer) error {
 	listen := fs.String("listen", "127.0.0.1:8080", "the address to serve on")
 	ws := fs.String("ws", "", "the websocket URL the browser connects to (default: the quick start's recorded one, beside the context's nkey)")
 	publicURL := fs.String("public-url", "", "the address the interface is reachable at, recorded on the announcement (default: http://<listen>)")
-	hosted := fs.Bool("hosted", false, "the hosted form: the browser signs in through the identity bridge with a GitHub token")
+	hosted := fs.Bool("hosted", false, "the hosted form: the browser signs in with GitHub through the install's identity bridge")
 	profile := fs.String("profile", bridgeProfileURL, "the install profile (hosted)")
-	account := fs.String("account", "", "the account to land in (hosted)")
+	account := fs.String("account", "", "pin the interface to one account (hosted); otherwise the person chooses among the accounts they hold")
 	store := fs.String("store", declaration.DefaultStore, "the rooms store")
 	ticks := fs.String("ticks", declaration.DefaultTickStore, "the tick store")
 	if err := fs.Parse(args); err != nil {
@@ -300,11 +363,20 @@ func webCmd(ctx context.Context, args []string, out io.Writer) error {
 	}
 	cfg := web.Config{Store: *store, TickStore: *ticks}
 	if *hosted {
-		if *account == "" {
-			return errors.New("--hosted needs --account")
-		}
 		cfg.Mode, cfg.Profile, cfg.Account = "hosted", *profile, *account
-	} else {
+		if *account == "" {
+			fmt.Fprintln(out, "hosted: the person signs in with GitHub and chooses among the accounts they hold")
+		} else {
+			fmt.Fprintf(out, "hosted: the person signs in with GitHub; the interface is pinned to account %s\n", *account)
+		}
+		fmt.Fprintln(out, "the announcement is not updated from here: store init --interface records where this interface is")
+		if !web.Built() {
+			fmt.Fprintln(out, "note: this binary carries no built interface (run make web); the page will say so")
+		}
+		fmt.Fprintf(out, "rooms interface at http://%s (%s; store %s)\n", *listen, cfg.Mode, cfg.Store)
+		return web.Serve(ctx, *listen, cfg)
+	}
+	{
 		url, nkey, creds, principal, err := f.connection()
 		if err != nil {
 			return err

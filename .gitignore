@@ -1,4 +1,7 @@
 bin/
 dist/
+# The rooms interface's build is committed (chronicle-agents-hq decision
+# 0005 point 6): go install yields a whole binary, and the gate proves it fresh.
+!web/dist/
 .claude/settings.local.json
 web/_app/node_modules/

@@ -25,7 +25,9 @@ var dist embed.FS
 type Config struct {
 	// Mode is "local" — a websocket and a credential over loopback, the
 	// quick start's or a self-hosted context's — or "hosted" — the install
-	// profile and the account; the browser asks for a GitHub token.
+	// profile, and the account only when the operator pinned one; the
+	// browser signs in through GitHub's web flow and enters an account the
+	// identity holds (chronicle-agents-hq decision 0007).
 	Mode string `json:"mode"`
 	// Servers is the websocket URL (local).
 	Servers string `json:"servers,omitempty"`
@@ -37,7 +39,8 @@ type Config struct {
 	Author string `json:"author,omitempty"`
 	// Profile is the install profile's address (hosted).
 	Profile string `json:"profile,omitempty"`
-	// Account is the account to land in (hosted).
+	// Account is the account the interface is pinned to (hosted); absent,
+	// the person chooses among the accounts they hold.
 	Account string `json:"account,omitempty"`
 	// Store is the rooms store.
 	Store string `json:"store"`

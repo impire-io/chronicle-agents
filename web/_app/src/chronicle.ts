@@ -1,7 +1,16 @@
 // Connecting, per /config.json (chronicle-agents-hq design 03): the quick
-// start's or a self-hosted context's credential over loopback, or the
-// hosted install profile and a GitHub token through the identity bridge.
-import { Client, connectBridge, fetchInstallProfile } from "@impire-io/chronicle";
+// start's or a self-hosted context's credential over loopback, or — hosted
+// — the install profile, a GitHub sign-in (signin.ts) and the identity
+// bridge into an account the person holds.
+import {
+  Client,
+  connectBridge,
+  connectIdentity,
+  fetchInstallProfile,
+  type IdentityMembership,
+  type InstallProfile,
+} from "@impire-io/chronicle";
+import { heldTokens } from "./signin";
 
 export interface Config {
   mode: "local" | "hosted";
@@ -9,7 +18,9 @@ export interface Config {
   nkeySeed?: string;
   creds?: string;
   author?: string;
+  /** The install profile's address (hosted). */
   profile?: string;
+  /** The account this interface is pinned to (hosted), when the operator pinned one. */
   account?: string;
   store: string;
   tickStore?: string;
@@ -21,42 +32,20 @@ export async function loadConfig(): Promise<Config> {
   return (await res.json()) as Config;
 }
 
-const TOKEN_KEY = "chronicle-agents.github-token";
 const NAME_KEY = "chronicle-agents.author";
 
 export const rememberedName = (): string => localStorage.getItem(NAME_KEY) ?? "";
 export const rememberName = (name: string): void => localStorage.setItem(NAME_KEY, name);
-export const rememberedToken = (): string => sessionStorage.getItem(TOKEN_KEY) ?? "";
-export const rememberToken = (token: string): void => sessionStorage.setItem(TOKEN_KEY, token);
-export const forgetToken = (): void => sessionStorage.removeItem(TOKEN_KEY);
 
-/** What the page needs the person to supply before it can connect. */
-export type Ask = { kind: "name" } | { kind: "token"; profile: string; account: string } | undefined;
-
-export function askFor(cfg: Config): Ask {
-  if (cfg.mode === "hosted") {
-    return rememberedToken() ? undefined : { kind: "token", profile: cfg.profile ?? "", account: cfg.account ?? "" };
-  }
+/** Whether the local form needs the person's name first: the credential carries none. */
+export function askForName(cfg: Config): boolean {
   // A credential file names its principal; an nkey does not, so the
   // person says who they are — the quick start's nominal identity.
-  if (!cfg.creds && !cfg.author && !rememberedName()) return { kind: "name" };
-  return undefined;
+  return cfg.mode === "local" && !cfg.creds && !cfg.author && !rememberedName();
 }
 
-export async function connect(cfg: Config): Promise<{ client: Client; author: string }> {
-  if (cfg.mode === "hosted") {
-    const profile = await fetchInstallProfile(cfg.profile || undefined);
-    const token = rememberedToken();
-    if (!token) throw new Error("a GitHub token is needed to sign in to the hosted service");
-    const client = await connectBridge({
-      servers: profile.websocket_url ?? "",
-      sentinel: profile.sentinel,
-      githubToken: token,
-      account: cfg.account ?? "",
-      name: "chronicle-agents web",
-    });
-    return { client, author: "" };
-  }
+/** The local form: the context's credential over loopback. */
+export async function connectLocal(cfg: Config): Promise<{ client: Client; author: string }> {
   const author = cfg.author || rememberedName();
   const client = await Client.connect({
     servers: cfg.servers ?? "",
@@ -66,4 +55,46 @@ export async function connect(cfg: Config): Promise<{ client: Client; author: st
     name: "chronicle-agents web",
   });
   return { client, author };
+}
+
+/** The install, hosted: its profile, fetched fresh, with what a browser's sign-in needs. */
+export async function loadProfile(cfg: Config): Promise<InstallProfile> {
+  const profile = await fetchInstallProfile(cfg.profile || undefined);
+  if (!profile.websocket_url) throw new Error("this install's profile names no websocket_url: a browser has nothing to dial");
+  if (!profile.github_token_url) throw new Error("this install has no web-flow sign-in: its profile names no github_token_url");
+  return profile;
+}
+
+/** Who the signed-in identity is and which accounts it holds, from the identity plane. */
+export async function identityOf(
+  profile: InstallProfile,
+  token: string,
+): Promise<{ login: string; memberships: IdentityMembership[] }> {
+  const id = await connectIdentity({
+    servers: profile.websocket_url ?? "",
+    sentinel: profile.sentinel,
+    githubToken: token,
+    name: "chronicle-agents web",
+  });
+  try {
+    const reply = await id.memberships();
+    return { login: id.login, memberships: reply.memberships };
+  } finally {
+    await id.close();
+  }
+}
+
+/**
+ * The bridge into an account. The token is read at every (re)connect, so
+ * a placement that expires is re-placed with the token the page has kept
+ * fresh in the meantime.
+ */
+export function enterAccount(profile: InstallProfile, account: string): Promise<Client> {
+  return connectBridge({
+    servers: profile.websocket_url ?? "",
+    sentinel: profile.sentinel,
+    githubToken: () => heldTokens()?.access ?? "",
+    account,
+    name: "chronicle-agents web",
+  });
 }
