@@ -190,7 +190,7 @@ func TestRefusals(t *testing.T) {
 		"bad identity":         {file: "identity: 'wil son'\n" + h, want: "identity:"},
 		"no harness":           {file: "identity: wilson\n", want: "harness: a preset or a template"},
 		"both harness":         {file: "identity: wilson\nharness: {preset: claude-code, template: {command: x}}\n", want: "not both"},
-		"unknown kind":         {file: "identity: wilson\ntriggers: [{kind: poke}]\n" + h, want: "not mention, op, subject or schedule"},
+		"unknown kind":         {file: "identity: wilson\ntriggers: [{kind: poke}]\n" + h, want: "not mention, direct, op, subject or schedule"},
 		"mention + op":         {file: "identity: wilson\ntriggers: [{kind: mention, operation: close}]\n" + h, want: "selects messages"},
 		"subject, no room":     {file: "identity: wilson\ntriggers: [{kind: subject, subject: alerts.>}]\n" + h, want: "names the room"},
 		"subject, no subject":  {file: "identity: wilson\ntriggers: [{kind: subject, room: room/ops}]\n" + h, want: "subject: required"},

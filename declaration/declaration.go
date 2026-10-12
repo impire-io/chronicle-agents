@@ -18,12 +18,15 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Trigger kinds (design 02, "the four triggers").
+// Trigger kinds (design 02, "the triggers").
 const (
 	KindMention  = "mention"
 	KindOp       = "op"
 	KindSubject  = "subject"
 	KindSchedule = "schedule"
+	// KindDirect: a message by the other party in a direct conversation
+	// the agent is a participant of (decision 0011).
+	KindDirect = "direct"
 )
 
 // Declaration is one agent, as its definition file states it.
@@ -51,7 +54,7 @@ type Declaration struct {
 
 // Trigger is one entry of the trigger set.
 type Trigger struct {
-	// Kind is mention, op, subject or schedule.
+	// Kind is mention, direct, op, subject or schedule.
 	Kind string `json:"kind"`
 	// Store is the chronicle store the trigger reads: the rooms store for
 	// mention and op (default rooms), the tick store for schedule (default
@@ -165,6 +168,8 @@ func (t Trigger) Describe() string {
 			return fmt.Sprintf("mention under %s in %s", t.Under, t.Store)
 		}
 		return "mention in " + t.Store
+	case KindDirect:
+		return "a direct conversation in " + t.Store
 	case KindOp:
 		op := t.Operation
 		if op == "" {
@@ -241,7 +246,7 @@ func (d Declaration) RoomStores() []string {
 	}
 	for _, t := range d.Triggers {
 		switch t.Kind {
-		case KindMention, KindOp:
+		case KindMention, KindOp, KindDirect:
 			if t.Room != "" {
 				add(t.RoomStore)
 			} else {
@@ -360,6 +365,16 @@ func (d *Declaration) validate() error {
 
 func (t *Trigger) validate(i int) error {
 	switch t.Kind {
+	case KindDirect:
+		if t.Store == "" {
+			t.Store = DefaultStore
+		}
+		if err := contract.ValidateStoreName(t.Store); err != nil {
+			return fmt.Errorf("triggers[%d].store: %w", i, err)
+		}
+		if t.Under != "" || t.Operation != "" || t.Room != "" {
+			return fmt.Errorf("triggers[%d]: a direct trigger selects the conversations the agent is in; it takes no under, operation or room", i)
+		}
 	case KindMention, KindOp:
 		if t.Store == "" {
 			t.Store = DefaultStore
@@ -408,9 +423,9 @@ func (t *Trigger) validate(i int) error {
 			return fmt.Errorf("triggers[%d].room: a schedule trigger names the room its turn is written in", i)
 		}
 	case "":
-		return fmt.Errorf("triggers[%d].kind: required — mention, op, subject or schedule", i)
+		return fmt.Errorf("triggers[%d].kind: required — mention, direct, op, subject or schedule", i)
 	default:
-		return fmt.Errorf("triggers[%d].kind: %q is not mention, op, subject or schedule", i, t.Kind)
+		return fmt.Errorf("triggers[%d].kind: %q is not mention, direct, op, subject or schedule", i, t.Kind)
 	}
 	if t.Room != "" {
 		if err := contract.ValidatePath(t.Room); err != nil {

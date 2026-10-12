@@ -28,14 +28,19 @@ export interface Config {
 
 export async function loadConfig(): Promise<Config> {
   const res = await fetch("/config.json", { cache: "no-store" });
-  if (!res.ok) throw new Error(`the interface's configuration could not be read (${res.status})`);
+  if (!res.ok)
+    throw new Error(
+      `the interface's configuration could not be read (${res.status})`,
+    );
   return (await res.json()) as Config;
 }
 
 const NAME_KEY = "chronicle-agents.author";
 
-export const rememberedName = (): string => localStorage.getItem(NAME_KEY) ?? "";
-export const rememberName = (name: string): void => localStorage.setItem(NAME_KEY, name);
+export const rememberedName = (): string =>
+  localStorage.getItem(NAME_KEY) ?? "";
+export const rememberName = (name: string): void =>
+  localStorage.setItem(NAME_KEY, name);
 
 /** Whether the local form needs the person's name first: the credential carries none. */
 export function askForName(cfg: Config): boolean {
@@ -45,7 +50,9 @@ export function askForName(cfg: Config): boolean {
 }
 
 /** The local form: the context's credential over loopback. */
-export async function connectLocal(cfg: Config): Promise<{ client: Client; author: string }> {
+export async function connectLocal(
+  cfg: Config,
+): Promise<{ client: Client; author: string }> {
   const author = cfg.author || rememberedName();
   const client = await Client.connect({
     servers: cfg.servers ?? "",
@@ -60,8 +67,14 @@ export async function connectLocal(cfg: Config): Promise<{ client: Client; autho
 /** The install, hosted: its profile, fetched fresh, with what a browser's sign-in needs. */
 export async function loadProfile(cfg: Config): Promise<InstallProfile> {
   const profile = await fetchInstallProfile(cfg.profile || undefined);
-  if (!profile.websocket_url) throw new Error("this install's profile names no websocket_url: a browser has nothing to dial");
-  if (!profile.github_token_url) throw new Error("this install has no web-flow sign-in: its profile names no github_token_url");
+  if (!profile.websocket_url)
+    throw new Error(
+      "this install's profile names no websocket_url: a browser has nothing to dial",
+    );
+  if (!profile.github_token_url)
+    throw new Error(
+      "this install has no web-flow sign-in: its profile names no github_token_url",
+    );
   return profile;
 }
 
@@ -89,7 +102,10 @@ export async function identityOf(
  * a placement that expires is re-placed with the token the page has kept
  * fresh in the meantime.
  */
-export function enterAccount(profile: InstallProfile, account: string): Promise<Client> {
+export function enterAccount(
+  profile: InstallProfile,
+  account: string,
+): Promise<Client> {
   return connectBridge({
     servers: profile.websocket_url ?? "",
     sentinel: profile.sentinel,
