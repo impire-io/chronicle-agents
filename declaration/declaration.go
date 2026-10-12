@@ -193,11 +193,17 @@ func ToolName(entry string) string {
 	name, _, _ := strings.Cut(strings.TrimSpace(entry), "(")
 	name = strings.TrimSpace(name)
 	for _, r := range name {
-		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+		if !isToolRune(r) {
 			return ""
 		}
 	}
 	return name
+}
+
+// isToolRune says whether a rune may be part of a tool's name: a letter, a
+// digit or an underscore.
+func isToolRune(r rune) bool {
+	return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_'
 }
 
 // ToolNames lists the tools the harness has, each once, in order.
